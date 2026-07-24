@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+env/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# IDEs
+.vscode/
+.idea/
+.agents/
+
+# Windows
+Thumbs.db
+Desktop.ini
+ehthru.db
+$RECYCLE.BIN/
+
+# Local & logs
+_local/
+*.log
+.env
