@@ -1,0 +1,20 @@
+name: Python Lint Warnings
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check-warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Ruff
+        uses: astral-sh/ruff-action@v4.1.0
+
+      - name: Check for syntax errors, broken imports, and unused variables
+        run: ruff check --select F,E9 --output-format=github .
