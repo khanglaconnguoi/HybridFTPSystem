@@ -5,6 +5,7 @@ R_150 = "150 File status okay, opening data connection"
 # 2xx — Positive Completion
 R_200 = "200 Command OK"
 R_211 = "211 System status, or system help reply"
+R_213 = "213 \"{size}\" "
 R_215 = "215 UNIX Type: L8"
 R_220 = "220 Service ready for new user"
 R_221 = "221 Goodbye"
