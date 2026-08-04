@@ -2,6 +2,7 @@ import os
 import sys
 import stat
 import time
+import hashlib
 
 
 class ClientSession:
@@ -11,7 +12,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-import common.reply_codes 
+from common.reply_codes import *
 
 # Tạo đường dẫn tuyệt đối cho kho dữ liệu Sandbox của Server
 ROOT_DIR = os.path.join(BASE_DIR, "storage")
@@ -191,7 +192,7 @@ class FSManager:
         # 3. Lấy dung lượng file bằng os.stat().st_size với bẫy ngoại lệ
         try:
             size = os.stat(target_abs).st_size
-            return True, R_213.format(size=size)
+            return True, R_213.format(string=str(size))
         except Exception:
             return False, R_550
 
@@ -210,7 +211,7 @@ class FSManager:
         try:
             mtime = os.path.getmtime(target_abs)
             mtime_str = time.strftime("%Y%m%d%H%M%S", time.gmtime(mtime))
-            return True, R_213.format(size=mtime_str)
+            return True, R_213.format(string=mtime_str)
         except Exception:
             return False, R_550
 
@@ -318,3 +319,51 @@ class FSManager:
         except Exception:
             return False, R_550
 
+    def get_hash(self,target_dir,algo="sha256"):
+
+        is_safe, target_abs, _ = self._resolve_path(target_dir)
+
+        if not is_safe or not os.path.isfile(target_abs):
+            return False, R_550
+        
+        if algo.lower() == "md5":
+
+            hasher=hashlib.md5()
+        else:
+            hasher=hashlib.sha256()
+
+        try:
+            with open(target_abs,"rb") as f:
+                while chunk := f.read(4096):
+                    hasher.update(chunk)
+            hash_hex = hasher.hexdigest()
+            return True, R_213.format(string=hash_hex)
+        except Exception:
+            return False, R_550
+
+if __name__ == "__main__":
+    fs = FSManager()
+
+    # 1. Tạo 1 file test mẫu để thử nghiệm
+    test_file = os.path.join(fs.root_dir, "hello.txt")
+    with open(test_file, "w") as f:
+        f.write("Hello Hybrid FTP System!")
+
+    # 2. Test NLST & LIST
+    print("1. NLST:", fs.get_nlst())
+    print("2. LIST:", fs.get_list())
+
+    # 3. Test SIZE & MDTM
+    print("3. SIZE:", fs.get_size("hello.txt"))
+    print("4. MDTM:", fs.get_mdtm("hello.txt"))
+
+    # 4. Test HASH SHA-256
+    print("5. HASH:", fs.get_hash("hello.txt"))
+
+    # 5. Test Đổi tên RNFR -> RNTO (hello.txt -> renamed_hello.txt)
+    ok_rnfr, msg_350, old_path = fs.set_rnfr("hello.txt")
+    print("6. RNFR:", msg_350)
+    print("7. RNTO:", fs.set_rnto(old_path, "renamed_hello.txt"))
+
+    # 6. Test DELE xóa file
+    print("8. DELE:", fs.set_dele("renamed_hello.txt"))
