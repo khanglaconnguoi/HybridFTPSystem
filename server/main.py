@@ -1,33 +1,21 @@
-import socket
+import sys
+from pathlib import Path
+
+# ???
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from server.ftp_server import FtpServer
 
 HOST = "127.0.0.1"
 PORT = 21
+SANDBOX_ROOT = "./data"
 
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind((HOST, PORT))
-s.listen(1)
 
-print("[Waiting for client...]\n")
-conn, addr = s.accept()
+def main() -> None:
+    server = FtpServer(HOST, PORT, SANDBOX_ROOT)
+    server.start()
 
-try:
-    print(f"[Connected by {addr}]\n")
-    while True:
-        data = conn.recv(1024)
-        if len(data) == 0:
-            print("[Client disconnected. Disconnecting...]\n")
-            break
 
-        print("[Command received]\n", data.decode("utf8"), "\n")
-
-except ConnectionResetError:
-    print("[Client disconnected. Disconnecting...]\n")
-
-except KeyboardInterrupt:
-    print("[Disconnecting...]\n")
-
-finally:
-    conn.close()
-    s.close()
-    print("[Server shutting down]\n")
+if __name__ == "__main__":
+    main()

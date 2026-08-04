@@ -1,32 +1,45 @@
-# 1xx — Positive Preliminary
-R_125 = "125 Data connection already open (Transfer starting)"
-R_150 = "150 File status okay, opening data connection"
+from enum import Enum
+from typing import Optional
 
-# 2xx — Positive Completion
-R_200 = "200 Command OK"
-R_211 = "211 System status, or system help reply"
-R_215 = "215 UNIX Type: L8"
-R_220 = "220 Service ready for new user"
-R_221 = "221 Goodbye"
-R_226 = "226 Closing data connection Transfer complete"
-R_230 = "230 Login successful, proceed"
-R_250 = "250 Requested file action OK"
-R_257 = "257 \"{path}\" is current directory"  # Use .format(path=...) when sending
 
-# 3xx — Positive Intermediate
-R_331 = "331 Username OK, need password"
-R_350 = "350 Requested file action pending RNTO"
+class ReplyCode(Enum):
+    # 1xx Positive Preliminary
+    DATA_CONN_OPEN = (125, "Data connection already open; transfer starting.")
+    OPENING_DATA_CONN = (150, "File status okay, opening data connection.")
 
-# 4xx — Transient Negative
-R_421 = "421 Service unavailable, closing control connection"
-R_425 = "425 Cannot open data connection"
-R_426 = "426 Connection closed; transfer aborted"
-R_450 = "450 File unavailable"
+    # 2xx Positive Completion
+    COMMAND_OK = (200, "Command okay.")
+    SYSTEM_STATUS = (211, "System status, or system help reply.")
+    SERVICE_READY = (220, "Service ready for new user.")
+    GOODBYE = (221, "Goodbye.")
+    TRANSFER_COMPLETE = (226, "Closing data connection. Transfer complete.")
+    LOGIN_SUCCESS = (230, "User logged in, proceed.")
+    FILE_ACTION_OK = (250, "Requested file action okay, completed.")
+    PATH_CREATED = (257, '"{path}" is the current directory.')
 
-# 5xx — Permanent Negative
-R_500 = "500 Syntax error"
-R_501 = "501 Syntax error in parameters"
-R_502 = "502 Command not implemented"
-R_503 = "503 Bad sequence of commands"
-R_530 = "530 Not logged in"
-R_550 = "550 File unavailable"
+    # 3xx Positive Intermediate
+    NEED_PASSWORD = (331, "User name okay, need password.")
+    PENDING_RNTO = (350, "Requested file action pending further information.")
+
+    # 4xx Transient Negative
+    SERVICE_UNAVAILABLE = (421, "Service not available, closing control connection.")
+    CANT_OPEN_DATA_CONN = (425, "Cannot open data connection.")
+    TRANSFER_ABORTED = (426, "Connection closed; transfer aborted.")
+    FILE_BUSY = (450, "Requested file action not taken. File unavailable.")
+
+    # 5xx Permanent Negative
+    SYNTAX_ERROR = (500, "Syntax error, command unrecognized.")
+    SYNTAX_ERROR_PARAM = (501, "Syntax error in parameters or arguments.")
+    NOT_IMPLEMENTED = (502, "Command not implemented.")
+    BAD_SEQUENCE = (503, "Bad sequence of commands.")
+    NOT_LOGGED_IN = (530, "Not logged in.")
+    FILE_UNAVAILABLE = (550, "File unavailable.")
+
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+
+    def format(self, custom_msg: Optional[str] = None) -> str:
+        """Return a standard FTP reply string: \"NNN Message\\r\\n\"."""
+        msg = custom_msg if custom_msg is not None else self.message
+        return f"{self.code} {msg}\r\n"
