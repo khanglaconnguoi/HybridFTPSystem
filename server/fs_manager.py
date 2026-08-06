@@ -4,52 +4,97 @@ import stat
 import time
 import hashlib
 
-
-class ClientSession:
-    pass
 # Thêm thư mục gốc vào sys.path để có thể import từ folder 'common'
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-from common.reply_codes import *
+from common.reply_codes import ReplyCode
 
 # Tạo đường dẫn tuyệt đối cho kho dữ liệu Sandbox của Server
 ROOT_DIR = os.path.join(BASE_DIR, "storage")
-
-# Tự động tạo thư mục storage trên đĩa cứng nếu chưa có
 os.makedirs(ROOT_DIR, exist_ok=True)
 
 
+# ----------------------------------------------------------------------
+# MODULE C CUSTOM EXCEPTIONS
+# ----------------------------------------------------------------------
+class FileSystemError(Exception):
+    """Ngoại lệ cơ sở cho tất cả lỗi thuộc Module C (File System Management)."""
+    def __init__(self, message: str = "File system error", reply_code: ReplyCode = ReplyCode.FILE_UNAVAILABLE):
+        super().__init__(message)
+        self.reply_code = reply_code
+
+
+class PathOutOfBoundsError(FileSystemError):
+    """Lỗi vi phạm ranh giới thư mục gốc (Sandbox Violation)."""
+    def __init__(self, message: str = "Path is outside the allowed root directory"):
+        super().__init__(message, reply_code=ReplyCode.FILE_UNAVAILABLE)
+
+
+class FileNotFoundFSConstraintError(FileSystemError):
+    """Lỗi tập tin hoặc thư mục không tồn tại."""
+    def __init__(self, message: str = "File or directory not found"):
+        super().__init__(message, reply_code=ReplyCode.FILE_UNAVAILABLE)
+
+
+class FileAlreadyExistsError(FileSystemError):
+    """Lỗi tập tin hoặc thư mục đã tồn tại."""
+    def __init__(self, message: str = "File or directory already exists"):
+        super().__init__(message, reply_code=ReplyCode.FILE_UNAVAILABLE)
+
+
+class PermissionFSDeniedError(FileSystemError):
+    """Lỗi vi phạm quyền truy cập đọc/ghi (Permission Denied)."""
+    def __init__(self, message: str = "Permission denied"):
+        super().__init__(message, reply_code=ReplyCode.FILE_UNAVAILABLE)
+
+
+class InvalidCommandSequenceError(FileSystemError):
+    """Lỗi vi phạm trình tự gọi lệnh (VD: gọi RNTO khi chưa gọi RNFR)."""
+    def __init__(self, message: str = "RNFR command required first"):
+        super().__init__(message, reply_code=ReplyCode.BAD_SEQUENCE)
+
+
+# ----------------------------------------------------------------------
+# MODULE C CORE CLASS: FSManager
+# ----------------------------------------------------------------------
 class FSManager:
-    def __init__(self, root_dir=ROOT_DIR):
+    """
+    Quản lý toàn bộ thao tác tệp tin và thư mục (Module C).
+    Đảm bảo quy tắc Sandbox cách ly đường dẫn và tuân thủ các lệnh FTP.
+    """
+
+    def __init__(self, session=None, root_dir: str = ROOT_DIR):
+        self.session = session
         self.root_dir = os.path.abspath(root_dir)
         self.current_rel_path = "/"
+        self.rename_pending = None
 
-    def _resolve_path(self, requested_path):
+    def _resolve_path(self, requested_path: str):
         """
-        Đầu vào: requested_path (Chuỗi do Client gửi lên, ví dụ: 'photos' hoặc '../etc')
-        Đầu ra: (is_safe, target_abs, new_virtual_path)
+        Phương thức nội bộ: Phân giải đường dẫn và kiểm tra rào chắn Sandbox.
+        Đầu vào: requested_path (str)
+        Đầu ra: (is_safe: bool, target_abs: str, new_virtual_path: str)
         """
         try:
-            # BƯỚC 1: Xử lý điểm bắt đầu 
+            if not requested_path:
+                requested_path = ""
+
             if requested_path.startswith("/") or requested_path.startswith("\\"):
                 combined = os.path.join(self.root_dir, requested_path.lstrip("/\\"))
             else:
                 curr_abs = os.path.join(self.root_dir, self.current_rel_path.lstrip("/\\"))
                 combined = os.path.join(curr_abs, requested_path)
 
-            # BƯỚC 2: Phân giải thành Đường dẫn Tuyệt đối Thật trên đĩa
             target_abs = os.path.abspath(combined)
 
-            # BƯỚC 3: Kiểm tra Rào chắn Sandbox (Anti Path Traversal)
+            # Kiểm tra Rào chắn Sandbox (Anti Path Traversal)
             is_safe = os.path.commonpath([self.root_dir, target_abs]) == self.root_dir
             if not is_safe:
                 return False, target_abs, self.current_rel_path
 
-            # BƯỚC 4: Tính lại Đường dẫn Ảo mới cho Client
             rel_path = os.path.relpath(target_abs, self.root_dir)
-            
             if rel_path == ".":
                 new_virtual_path = "/"
             else:
@@ -59,110 +104,90 @@ class FSManager:
         except (ValueError, Exception):
             return False, "", self.current_rel_path
 
-    def get_pwd(self):
+    def resolve_path(self, requested: str) -> str | None:
+        """
+        Interface công khai cho Module B (RdtEngine) gọi:
+        Trả về đường dẫn tuyệt đối an toàn trên đĩa nếu nằm trong Sandbox, ngược lại trả về None.
+        """
+        is_safe, target_abs, _ = self._resolve_path(requested)
+        return target_abs if is_safe else None
+
+    def handle_pwd(self, arg: str = ""):
         """Xử lý lệnh PWD: Trả về đường dẫn ảo hiện tại theo mã FTP 257"""
-        return True, R_257.format(path=self.current_rel_path)
+        msg = f'"{self.current_rel_path}" is the current directory.'
+        return True, ReplyCode.PATH_CREATED.format(custom_msg=msg)
 
-    def set_cwd(self, target_dir):
+    def handle_cwd(self, path: str = ""):
         """Xử lý lệnh CWD: Thay đổi thư mục làm việc hiện tại"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, new_virtual_path = self._resolve_path(target_dir)
+        is_safe, target_abs, new_virtual_path = self._resolve_path(path)
 
-        # 2. Kiểm tra vi phạm Sandbox
         if not is_safe:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 3. Kiểm tra sự tồn tại
-        if not os.path.exists(target_abs):
-            return False, R_550
+        if not os.path.exists(target_abs) or not os.path.isdir(target_abs):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 4. Kiểm tra có phải là thư mục hay không
-        if not os.path.isdir(target_abs):
-            return False, R_550
-
-        # 5. Cập nhật vị trí mới nhất
         self.current_rel_path = new_virtual_path
+        return True, ReplyCode.FILE_ACTION_OK.format()
 
-        # 6. Trả về kết quả THÀNH CÔNG (Mã 250)
-        return True, R_250
-
-    def set_cdup(self):
+    def handle_cdup(self, arg: str = ""):
         """Xử lý lệnh CDUP: Chuyển lên thư mục cha"""
-        return self.set_cwd("..")
+        return self.handle_cwd("..")
 
-    def make_dir(self, dir_name):
+    def handle_mkd(self, dirname: str = ""):
         """Xử lý lệnh MKD: Tạo thư mục mới"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(dir_name)
-        
-        # 2. Kiểm tra vi phạm Sandbox
-        if not is_safe:
-            return False, R_550
-        
-        # 3. Kiểm tra sự tồn tại (chống ghi đè/trùng lặp)
-        if os.path.exists(target_abs):
-            return False, R_550
+        is_safe, target_abs, _ = self._resolve_path(dirname)
+        if not is_safe or os.path.exists(target_abs):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 4. Thử tạo thư mục thực tế trên đĩa cứng
         try:
             os.mkdir(target_abs)
-            return True, R_250
+            msg = f'"{dirname}" directory created.'
+            return True, ReplyCode.PATH_CREATED.format(custom_msg=msg)
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def remove_dir(self, dir_name):
+    def handle_rmd(self, dirname: str = ""):
         """Xử lý lệnh RMD: Xóa thư mục rỗng"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(dir_name)
-        
-        # 2. Kiểm tra vi phạm Sandbox hoặc không phải Thư mục
+        is_safe, target_abs, _ = self._resolve_path(dirname)
         if not is_safe or not os.path.exists(target_abs) or not os.path.isdir(target_abs):
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 5. Thử xóa thư mục bằng os.rmdir()
         try:
             os.rmdir(target_abs)
-            return True, R_250
+            return True, ReplyCode.FILE_ACTION_OK.format()
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def get_nlst(self, target_dir=""):
-        """Xử lý lệnh NLST: Trả về danh sách tên file/folder"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-
-        # 2. Kiểm tra vi phạm Sandbox / không phải Thư mục / không có quyền đọc (os.R_OK)
+    def handle_nlst(self, path: str = ""):
+        """Xử lý lệnh NLST: Trả về danh sách tên tệp/thư mục"""
+        is_safe, target_abs, _ = self._resolve_path(path)
         if not is_safe or not os.path.exists(target_abs) or not os.path.isdir(target_abs):
-            return False, R_550
-        if not os.access(target_abs, os.R_OK):
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 3. Lấy danh sách file/folder với bẫy ngoại lệ
+        if not os.access(target_abs, os.R_OK):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
+        try:
+            names = os.listdir(target_abs)
+            data_str = "\r\n".join(names) + "\r\n" if names else ""
+            return True, data_str
+        except Exception:
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
+    def handle_list(self, path: str = ""):
+        """Xử lý lệnh LIST: Trả về danh sách chi tiết (name, size, type, permissions)"""
+        is_safe, target_abs, _ = self._resolve_path(path)
+        if not is_safe or not os.path.exists(target_abs) or not os.path.isdir(target_abs):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
+        if not os.access(target_abs, os.R_OK):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
         try:
             names = os.listdir(target_abs)
             if not names:
                 return True, ""
-            data_str = "\r\n".join(names) + "\r\n"
-            return True, data_str
-        except Exception:
-            return False, R_550
-
-    def get_list(self, target_dir=""):
-        """Xử lý lệnh LIST: Trả về danh sách chi tiết (name, size, type, permissions)"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-
-        # 2. Kiểm tra vi phạm Sandbox / không phải Thư mục / không có quyền đọc (os.R_OK)
-        if not is_safe or not os.path.exists(target_abs) or not os.path.isdir(target_abs):
-            return False, R_550
-        if not os.access(target_abs, os.R_OK):
-            return False, R_550
-
-        # 3. Lấy danh sách các mục với bẫy ngoại lệ
-        try:
-            names = os.listdir(target_abs)
-            if not names:
-                return True, ""  
 
             data_str = ""
             for name in names:
@@ -170,200 +195,147 @@ class FSManager:
                 info = os.stat(item_path)
                 perm_str = stat.filemode(info.st_mode)
                 file_size = info.st_size
-                
                 line = f"{perm_str} {file_size:>10} {name}\r\n"
                 data_str += line
 
             return True, data_str
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def get_size(self, target_dir=""):
-        """Xử lý lệnh SIZE: Trả về độ lớn của File"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-
-        # 2. Kiểm tra vi phạm Sandbox / File không tồn tại / Không phải là File / không có quyền đọc
+    def handle_size(self, path: str = ""):
+        """Xử lý lệnh SIZE: Trả về độ lớn của tập tin (dùng mã 213 FILE_STATUS)"""
+        is_safe, target_abs, _ = self._resolve_path(path)
         if not is_safe or not os.path.exists(target_abs) or not os.path.isfile(target_abs):
-            return False, R_550
-        if not os.access(target_abs, os.R_OK):
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 3. Lấy dung lượng file bằng os.stat().st_size với bẫy ngoại lệ
+        if not os.access(target_abs, os.R_OK):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
         try:
             size = os.stat(target_abs).st_size
-            return True, R_213.format(string=str(size))
+            return True, ReplyCode.FILE_STATUS.format(custom_msg=str(size))
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def get_mdtm(self, target_dir=""):
-        """Xử lý lệnh MDTM: Trả về mốc thời gian sửa đổi lần cuối của tập tin (định dạng YYYYMMDDHHMMSS)"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-
-        # 2. Kiểm tra vi phạm Sandbox / File không tồn tại / Không phải là File / không có quyền đọc
+    def handle_mdtm(self, path: str = ""):
+        """Xử lý lệnh MDTM: Trả về mốc thời gian sửa đổi UTC YYYYMMDDHHMMSS (dùng mã 213 FILE_STATUS)"""
+        is_safe, target_abs, _ = self._resolve_path(path)
         if not is_safe or not os.path.exists(target_abs) or not os.path.isfile(target_abs):
-            return False, R_550
-        if not os.access(target_abs, os.R_OK):
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 3. Lấy mốc thời gian sửa đổi tập tin và định dạng theo chuẩn UTC YYYYMMDDHHMMSS
+        if not os.access(target_abs, os.R_OK):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
         try:
             mtime = os.path.getmtime(target_abs)
             mtime_str = time.strftime("%Y%m%d%H%M%S", time.gmtime(mtime))
-            return True, R_213.format(string=mtime_str)
+            return True, ReplyCode.FILE_STATUS.format(custom_msg=mtime_str)
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def set_dele(self,target_dir=""):
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-
-        # 2. Kiểm tra vi phạm Sandbox / File không tồn tại / Không phải là File / không có quyền ghi (os.W_OK)
+    def handle_dele(self, path: str = ""):
+        """Xử lý lệnh DELE: Xóa tập tin"""
+        is_safe, target_abs, _ = self._resolve_path(path)
         if not is_safe or not os.path.exists(target_abs) or not os.path.isfile(target_abs):
-            return False, R_550
-        if not os.access(target_abs, os.W_OK):
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 3. Xóa tập tin bằng os.remove() với bẫy ngoại lệ
+        if not os.access(target_abs, os.W_OK):
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
         try:
             os.remove(target_abs)
-            return True, R_250
+            return True, ReplyCode.FILE_ACTION_OK.format()
         except Exception:
-            return False, R_550
-    
-    def set_stou(self, target_dir="file.tmp"):
-    # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-        if not is_safe:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 2. Thuật toán sinh tên file độc nhất nếu bị trùng
+    def handle_stou(self, path: str = "file.tmp"):
+        """Xử lý lệnh STOU: Tạo file độc nhất 0-byte giữ chỗ"""
+        is_safe, target_abs, _ = self._resolve_path(path)
+        if not is_safe:
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
         base_dir = os.path.dirname(target_abs)
         filename = os.path.basename(target_abs)
         name, ext = os.path.splitext(filename)
-        
         if not name:
             name, ext = "file", ".tmp"
 
         unique_abs = target_abs
         counter = 1
-
-        # Lặp lại cho đến khi tìm được đường dẫn chưa tồn tại
         while os.path.exists(unique_abs):
             unique_name = f"{name}_{counter}{ext}"
             unique_abs = os.path.join(base_dir, unique_name)
             counter += 1
 
-        # 3. Tạo file rỗng giữ chỗ trên đĩa
         try:
             with open(unique_abs, "xb") as f:
-                pass  # Tạo file rỗng 0-byte
-            
-            return True, R_250
+                pass
+            return True, ReplyCode.FILE_ACTION_OK.format()
         except Exception:
-            return False, R_550
-            
-    def set_appe(self, target_dir=""):
-        """Xử lý chuẩn bị cho lệnh APPE: Nối thêm dữ liệu vào cuối file"""
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-        if not is_safe:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 2. Trường hợp 1: File đã tồn tại -> Kiểm tra phải là file chuẩn và có quyền ghi
+    def handle_appe(self, path: str = ""):
+        """Xử lý lệnh APPE: Chuẩn bị nối dữ liệu vào file"""
+        is_safe, target_abs, _ = self._resolve_path(path)
+        if not is_safe:
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
+
         if os.path.exists(target_abs):
             if not os.path.isfile(target_abs) or not os.access(target_abs, os.W_OK):
-                return False, R_550
+                return False, ReplyCode.FILE_UNAVAILABLE.format()
         else:
-            # Trường hợp 2: File chưa tồn tại -> Kiểm tra thư mục cha có quyền tạo/ghi file không
             parent_dir = os.path.dirname(target_abs)
             if not os.path.exists(parent_dir) or not os.access(parent_dir, os.W_OK):
-                return False, R_550
+                return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        # 3. Trả về đường dẫn tuyệt đối thành công để Server mở file chế độ 'ab'
-        return True, R_150, target_abs
+        return True, ReplyCode.OPENING_DATA_CONN.format(), target_abs
 
-
-    def set_rnfr(self,target_dir=""):
-        # 1. Cho đường dẫn đi qua bộ lọc Sandbox
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
+    def handle_rnfr(self, oldname: str = ""):
+        """Xử lý bước 1 của đổi tên (RNFR): Kiểm tra file tồn tại và lưu vết"""
+        is_safe, target_abs, _ = self._resolve_path(oldname)
         if not is_safe or not os.path.exists(target_abs):
-            return False, R_550
-        return True,R_350, target_abs            
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def set_rnto(self, old_file_path, new_name):
-        """Xử lý bước 2 của đổi tên (RNTO): Đổi tên file/folder thật trên đĩa"""
+        self.rename_pending = target_abs
+        return True, ReplyCode.PENDING_RNTO.format(), target_abs
+
+    def handle_rnto(self, newname: str = ""):
+        """Xử lý bước 2 của đổi tên (RNTO): Thực hiện đổi tên thực tế trên đĩa"""
         try:
-            # 1. Kiểm tra nếu chưa từng gọi lệnh RNFR trước đó
-            if not old_file_path or not os.path.exists(old_file_path):
-                return False, R_503
+            if not self.rename_pending or not os.path.exists(self.rename_pending):
+                return False, ReplyCode.BAD_SEQUENCE.format()
 
-            # 2. Kiểm tra nếu Client quên nhập tên mới
-            if not new_name:
-                return False, R_550
-            
-            # 3. Cho tên mới đi qua bộ lọc Sandbox
-            is_safe, new_abs, _ = self._resolve_path(new_name)
-            if not is_safe:
-                return False, R_550
+            if not newname:
+                return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-            # 4. Kiểm tra nếu tên mới đã tồn tại trên đĩa (tránh ghi đè trùng tên)
-            if os.path.exists(new_abs):
-                return False, R_550
-            
-            # 5. Thực hiện đổi tên đĩa cứng thật
-            os.rename(old_file_path, new_abs)
-            return True, R_250
+            is_safe, new_abs, _ = self._resolve_path(newname)
+            if not is_safe or os.path.exists(new_abs):
+                return False, ReplyCode.FILE_UNAVAILABLE.format()
 
+            os.rename(self.rename_pending, new_abs)
+            self.rename_pending = None
+            return True, ReplyCode.FILE_ACTION_OK.format()
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def get_hash(self,target_dir,algo="sha256"):
-
-        is_safe, target_abs, _ = self._resolve_path(target_dir)
-
+    def handle_hash(self, path: str = "", algo: str = "sha256"):
+        """Xử lý lệnh HASH: Tính mã băm SHA256 hoặc MD5 (dùng mã 213 FILE_STATUS)"""
+        is_safe, target_abs, _ = self._resolve_path(path)
         if not is_safe or not os.path.isfile(target_abs):
-            return False, R_550
-        
-        if algo.lower() == "md5":
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-            hasher=hashlib.md5()
+        if algo.lower() == "md5":
+            hasher = hashlib.md5()
         else:
-            hasher=hashlib.sha256()
+            hasher = hashlib.sha256()
 
         try:
-            with open(target_abs,"rb") as f:
-                while chunk := f.read(4096):
+            with open(target_abs, "rb") as f:
+                while chunk := f.read(1024):
                     hasher.update(chunk)
             hash_hex = hasher.hexdigest()
-            return True, R_213.format(string=hash_hex)
+            return True, ReplyCode.FILE_STATUS.format(custom_msg=hash_hex)
         except Exception:
-            return False, R_550
+            return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-if __name__ == "__main__":
-    fs = FSManager()
 
-    # 1. Tạo 1 file test mẫu để thử nghiệm
-    test_file = os.path.join(fs.root_dir, "hello.txt")
-    with open(test_file, "w") as f:
-        f.write("Hello Hybrid FTP System!")
-
-    # 2. Test NLST & LIST
-    print("1. NLST:", fs.get_nlst())
-    print("2. LIST:", fs.get_list())
-
-    # 3. Test SIZE & MDTM
-    print("3. SIZE:", fs.get_size("hello.txt"))
-    print("4. MDTM:", fs.get_mdtm("hello.txt"))
-
-    # 4. Test HASH SHA-256
-    print("5. HASH:", fs.get_hash("hello.txt"))
-
-    # 5. Test Đổi tên RNFR -> RNTO (hello.txt -> renamed_hello.txt)
-    ok_rnfr, msg_350, old_path = fs.set_rnfr("hello.txt")
-    print("6. RNFR:", msg_350)
-    print("7. RNTO:", fs.set_rnto(old_path, "renamed_hello.txt"))
-
-    # 6. Test DELE xóa file
-    print("8. DELE:", fs.set_dele("renamed_hello.txt"))

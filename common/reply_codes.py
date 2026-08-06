@@ -10,6 +10,7 @@ class ReplyCode(Enum):
     # 2xx Positive Completion
     COMMAND_OK = (200, "Command okay.")
     SYSTEM_STATUS = (211, "System status, or system help reply.")
+    FILE_STATUS = (213, "File status.")
     SERVICE_READY = (220, "Service ready for new user.")
     GOODBYE = (221, "Goodbye.")
     TRANSFER_COMPLETE = (226, "Closing data connection. Transfer complete.")
