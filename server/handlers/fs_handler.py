@@ -12,6 +12,7 @@ if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
 from common.reply_codes import ReplyCode
+from common.constants import CHUNK_SIZE
 from server.fs.path_guard import PathGuard
 from server.fs.dir_walker import DirWalker
 
@@ -319,7 +320,7 @@ class FSManager:
 
         try:
             with open(target_abs, "rb") as f:
-                while chunk := f.read(1024):
+                while chunk := f.read(CHUNK_SIZE):
                     hasher.update(chunk)
             hash_hex = hasher.hexdigest()
             return True, ReplyCode.FILE_STATUS.format(custom_msg=hash_hex)
