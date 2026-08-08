@@ -1,5 +1,6 @@
 from common.reply_codes import ReplyCode
 from server.session import ClientSession
+from server.handlers.fs_handler import FsHandler
 
 
 class CommandDispatcher:
@@ -9,15 +10,15 @@ class CommandDispatcher:
     """
 
     session: ClientSession
-    _fs: object  # FsManager provided by Module C
+    _fs: FsHandler  # FsHandler / FSManager provided by Module C
     _rdt: object  # RdtEngine provided by Module B
     _handlers: dict  # { "USER": callable, "RETR": callable, ... }
 
     def __init__(
-        self, session: ClientSession, fs_manager: object, rdt_engine: object
+        self, session: ClientSession, fs_manager: object = None, rdt_engine: object = None
     ):
         self.session = session
-        self._fs = fs_manager
+        self._fs = fs_manager if fs_manager is not None else FsHandler(session=session, root_dir=session.sandbox_root)
         self._rdt = rdt_engine
 
         # Routing table: command string -> handler method
@@ -39,20 +40,20 @@ class CommandDispatcher:
             "STOR": self._not_implemented,
             "ABOR": self._not_implemented,
             # Module C commands
-            "CWD": self._not_implemented,
-            "CDUP": self._not_implemented,
-            "MKD": self._not_implemented,
-            "RMD": self._not_implemented,
-            "LIST": self._not_implemented,
-            "NLST": self._not_implemented,
-            "SIZE": self._not_implemented,
-            "MDTM": self._not_implemented,
-            "STOU": self._not_implemented,
-            "APPE": self._not_implemented,
-            "DELE": self._not_implemented,
-            "RNFR": self._not_implemented,
-            "RNTO": self._not_implemented,
-            "HASH": self._not_implemented,
+            "CWD": self._handle_cwd,
+            "CDUP": self._handle_cdup,
+            "MKD": self._handle_mkd,
+            "RMD": self._handle_rmd,
+            "LIST": self._handle_list,
+            "NLST": self._handle_nlst,
+            "SIZE": self._handle_size,
+            "MDTM": self._handle_mdtm,
+            "STOU": self._handle_stou,
+            "APPE": self._handle_appe,
+            "DELE": self._handle_dele,
+            "RNFR": self._handle_rnfr,
+            "RNTO": self._handle_rnto,
+            "HASH": self._handle_hash,
         }
 
     def _not_implemented(self, raw_args: str) -> bool:
@@ -84,10 +85,99 @@ class CommandDispatcher:
 
         return handler(raw_args)  # False = close session
 
+
     def _handle_user(self, arg: str) -> bool: return self._not_implemented(arg)
     def _handle_pass(self, arg: str) -> bool: return self._not_implemented(arg)
     def _handle_quit(self, arg: str) -> bool: return self._not_implemented(arg)
     def _handle_noop(self, arg: str) -> bool: return self._not_implemented(arg)
-    def _handle_pwd(self, arg: str) -> bool: return self._not_implemented(arg)
     def _handle_stat(self, arg: str) -> bool: return self._not_implemented(arg)
     def _handle_help(self, arg: str) -> bool: return self._not_implemented(arg)
+
+    # ------------------------------------------------------------------
+    # Module C Handlers (File System & Directory Management)
+    # ------------------------------------------------------------------
+    def _handle_pwd(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_pwd(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_cwd(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_cwd(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_cdup(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_cdup(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_mkd(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_mkd(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_rmd(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_rmd(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_list(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_list(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_nlst(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_nlst(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_size(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_size(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_mdtm(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_mdtm(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_stou(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_stou(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_appe(self, arg: str) -> bool:
+        res = self._fs.handle_appe(arg)
+        reply = res[1] if isinstance(res, tuple) and len(res) >= 2 else str(res)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_dele(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_dele(arg)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_rnfr(self, arg: str) -> bool:
+        res = self._fs.handle_rnfr(arg)
+        if isinstance(res, tuple) and len(res) >= 2:
+            ok, reply = res[0], res[1]
+            if len(res) >= 3:
+                self.session.rename_pending = res[2]
+        else:
+            reply = str(res)
+        self.session.send_reply(reply)
+        return True
+
+    def _handle_rnto(self, arg: str) -> bool:
+        ok, reply = self._fs.handle_rnto(arg)
+        self.session.send_reply(reply)
+        self.session.rename_pending = None
+        return True
+
+    def _handle_hash(self, arg: str) -> bool:
+        parts = arg.split(" ", 1)
+        path = parts[0] if parts else ""
+        algo = parts[1] if len(parts) > 1 else "sha256"
+        ok, reply = self._fs.handle_hash(path, algo)
+        self.session.send_reply(reply)
+        return True
