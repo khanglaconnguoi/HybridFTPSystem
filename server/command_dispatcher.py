@@ -1,6 +1,7 @@
 from common.reply_codes import ReplyCode
 from server.session import ClientSession
 from server.handlers.fs_handler import FsHandler
+from server.handlers.auth_handler import AuthHandler
 
 
 class CommandDispatcher:
@@ -10,6 +11,7 @@ class CommandDispatcher:
     """
 
     session: ClientSession
+    _auth: AuthHandler  # AuthHandler provided by Module A
     _fs: FsHandler  # FsHandler / FSManager provided by Module C
     _rdt: object  # RdtEngine provided by Module B
     _handlers: dict  # { "USER": callable, "RETR": callable, ... }
@@ -18,6 +20,7 @@ class CommandDispatcher:
         self, session: ClientSession, fs_manager: object = None, rdt_engine: object = None
     ):
         self.session = session
+        self._auth = AuthHandler(session=session)
         self._fs = fs_manager if fs_manager is not None else FsHandler(session=session, root_dir=session.sandbox_root)
         self._rdt = rdt_engine
 
@@ -86,12 +89,35 @@ class CommandDispatcher:
         return handler(raw_args)  # False = close session
 
 
-    def _handle_user(self, arg: str) -> bool: return self._not_implemented(arg)
-    def _handle_pass(self, arg: str) -> bool: return self._not_implemented(arg)
-    def _handle_quit(self, arg: str) -> bool: return self._not_implemented(arg)
-    def _handle_noop(self, arg: str) -> bool: return self._not_implemented(arg)
-    def _handle_stat(self, arg: str) -> bool: return self._not_implemented(arg)
-    def _handle_help(self, arg: str) -> bool: return self._not_implemented(arg)
+    def _handle_user(self, arg: str) -> bool:
+        keep_alive, reply = self._auth.handle_user(arg)
+        self.session.send_reply(reply)
+        return keep_alive
+
+    def _handle_pass(self, arg: str) -> bool:
+        keep_alive, reply = self._auth.handle_pass(arg)
+        self.session.send_reply(reply)
+        return keep_alive
+
+    def _handle_quit(self, arg: str) -> bool:
+        keep_alive, reply = self._auth.handle_quit(arg)
+        self.session.send_reply(reply)
+        return keep_alive
+
+    def _handle_noop(self, arg: str) -> bool:
+        keep_alive, reply = self._auth.handle_noop(arg)
+        self.session.send_reply(reply)
+        return keep_alive
+
+    def _handle_stat(self, arg: str) -> bool:
+        keep_alive, reply = self._auth.handle_stat(arg)
+        self.session.send_reply(reply)
+        return keep_alive
+
+    def _handle_help(self, arg: str) -> bool:
+        keep_alive, reply = self._auth.handle_help(arg)
+        self.session.send_reply(reply)
+        return keep_alive
 
     # ------------------------------------------------------------------
     # Module C Handlers (File System & Directory Management)
