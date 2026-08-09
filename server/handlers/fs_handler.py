@@ -17,8 +17,9 @@ from server.fs.path_guard import PathGuard
 from server.fs.dir_walker import DirWalker
 
 # Tạo đường dẫn tuyệt đối cho kho dữ liệu Sandbox của Server
-ROOT_DIR = os.path.join(BASE_DIR, "storage")
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "server_data"))
 os.makedirs(ROOT_DIR, exist_ok=True)
+
 
 
 # ----------------------------------------------------------------------
