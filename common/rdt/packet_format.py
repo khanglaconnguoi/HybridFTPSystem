@@ -87,17 +87,17 @@ class UdpPacket:
 
     # ── Factory methods (tạo gói nhanh) ────────────────────────
     @classmethod
-    def data_pkt(cls, seq: int, payload: bytes) -> "UdpPacket":
+    def data_packet(cls, seq: int, payload: bytes) -> "UdpPacket":
         return cls(seq_num=seq, flags=FLAG_DATA, payload=payload)
 
     @classmethod
-    def ack_pkt(cls, ack: int) -> "UdpPacket":
+    def ack_packet(cls, ack: int) -> "UdpPacket":
         return cls(ack_num=ack, flags=FLAG_ACK)
 
     @classmethod
-    def fin_pkt(cls) -> "UdpPacket":
+    def fin_packet(cls) -> "UdpPacket":
         return cls(flags=FLAG_FIN)
 
     @classmethod
-    def syn_pkt(cls) -> "UdpPacket":
+    def syn_packet(cls) -> "UdpPacket":
         return cls(flags=FLAG_SYN)
