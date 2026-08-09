@@ -1,6 +1,7 @@
 import socket
 from common.rdt.sender   import RdtSender
 from common.rdt.receiver import RdtReceiver
+from common.rdt.packet_format import UdpPacket
 
 class DataChannelClient:
     """
@@ -44,14 +45,13 @@ class DataChannelClient:
             return None
             
         if self._server_data_addr:
-            from common.rdt.packet_format import UdpPacket
             syn = UdpPacket.syn_packet()
             self._udp_sock.sendto(syn.pack(), self._server_data_addr)
             
         receiver = RdtReceiver(self._udp_sock)
-        peer_ip  = self._server_data_addr[0] if self._server_data_addr else None
-        peer     = (peer_ip, None) if peer_ip else None
-        return receiver.receive_bytes(peer)
+        # peer_ip  = self._server_data_addr[0] if self._server_data_addr else None
+        # peer     = (peer_ip, None) if peer_ip else None
+        return receiver.receive_bytes(self._server_data_addr)
 
     def close(self) -> None:
         if self._udp_sock:
