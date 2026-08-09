@@ -1,4 +1,5 @@
 import socket
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Optional
 
@@ -9,6 +10,17 @@ class AuthState(Enum):
     ANONYMOUS = auto()  # USER has not been sent yet
     USER_OK = auto()  # USER received, waiting for PASS
     LOGGED_IN = auto()  # Authentication successful
+
+
+@dataclass
+class DataConfig:
+    """Stores data channel transfer configuration for a client session."""
+
+    transfer_type: str = "I"  # 'A' = ASCII, 'I' = Binary
+    transfer_mode: str = "S"  # 'S' = Stream, 'B' = Block, 'C' = Compressed
+    mode: str = "PASV"  # 'PORT' or 'PASV'
+    client_data_addr: Optional[tuple[str, int]] = None
+    server_data_port: Optional[int] = None
 
 
 class ClientSession:
@@ -29,12 +41,9 @@ class ClientSession:
     cwd: str
 
     # Transfer configuration (Module B)
-    transfer_type: str  # 'A' = ASCII, 'I' = Binary
-    transfer_mode: str  # 'S' = Stream, 'B' = Block, 'C' = Compressed
-    data_channel_mode: str  # 'PORT' or 'PASV'
-    data_port: Optional[int]
-    data_addr: Optional[tuple[str, int]]
+    data_config: DataConfig
     rdt_window: dict
+    transfer_active: bool
 
     # Pending state (Module C)
     rename_pending: Optional[str]  # Stores the old name while waiting for RNTO
@@ -57,15 +66,52 @@ class ClientSession:
         self.cwd = "/"
 
         # Transfer configuration (Module B)
-        self.transfer_type = "I"  # 'A' or 'I'
-        self.transfer_mode = "S"  # 'S', 'B', 'C'
-        self.data_channel_mode = "PASV"  # 'PORT' or 'PASV'
-        self.data_port = None
-        self.data_addr = None
+        self.data_config = DataConfig()
         self.rdt_window = {}
+        self.transfer_active = False
 
         # Pending state (Module C)
         self.rename_pending = None
+
+    @property
+    def transfer_type(self) -> str:
+        return self.data_config.transfer_type
+
+    @transfer_type.setter
+    def transfer_type(self, value: str) -> None:
+        self.data_config.transfer_type = value
+
+    @property
+    def transfer_mode(self) -> str:
+        return self.data_config.transfer_mode
+
+    @transfer_mode.setter
+    def transfer_mode(self, value: str) -> None:
+        self.data_config.transfer_mode = value
+
+    @property
+    def data_channel_mode(self) -> str:
+        return self.data_config.mode
+
+    @data_channel_mode.setter
+    def data_channel_mode(self, value: str) -> None:
+        self.data_config.mode = value
+
+    @property
+    def data_port(self) -> Optional[int]:
+        return self.data_config.server_data_port
+
+    @data_port.setter
+    def data_port(self, value: Optional[int]) -> None:
+        self.data_config.server_data_port = value
+
+    @property
+    def data_addr(self) -> Optional[tuple[str, int]]:
+        return self.data_config.client_data_addr
+
+    @data_addr.setter
+    def data_addr(self, value: Optional[tuple[str, int]]) -> None:
+        self.data_config.client_data_addr = value
 
     def send_reply(self, reply_line: str) -> None:
         """Send one FTP reply line back to the client over the TCP control socket."""
@@ -75,3 +121,4 @@ class ClientSession:
     def is_logged_in(self) -> bool:
         """Return True if the client has authenticated successfully."""
         return self.auth_state == AuthState.LOGGED_IN
+

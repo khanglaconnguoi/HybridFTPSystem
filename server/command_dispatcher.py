@@ -1,5 +1,6 @@
 from common.reply_codes import ReplyCode
 from server.handlers.auth_handler import AuthHandler
+from server.handlers.data_handler import DataHandler
 from server.handlers.fs_handler import FsHandler
 from server.session import ClientSession
 
@@ -15,16 +16,29 @@ class CommandDispatcher:
     session: ClientSession
     _auth: AuthHandler  # AuthHandler provided by Module A
     _fs: FsHandler  # FsHandler / FSManager provided by Module C
-    _rdt: object  # RdtEngine provided by Module B
+    _data: DataHandler  # DataHandler provided by Module B
     _handlers: dict  # { "USER": callable, "RETR": callable, ... }
 
     def __init__(
-        self, session: ClientSession, fs_manager: object = None, rdt_engine: object = None
+        self,
+        session: ClientSession,
+        fs_manager: object = None,
+        rdt_engine: object = None,
+        data_handler: object = None,
     ):
         self.session = session
         self._auth = AuthHandler(session=session)
-        self._fs = fs_manager if fs_manager is not None else FsHandler(session=session, root_dir=session.sandbox_root)
-        self._rdt = rdt_engine
+        self._fs = (
+            fs_manager
+            if fs_manager is not None
+            else FsHandler(session=session, root_dir=session.sandbox_root)
+        )
+        if data_handler is not None:
+            self._data = data_handler
+        elif rdt_engine is not None:
+            self._data = rdt_engine
+        else:
+            self._data = DataHandler(session=session)
 
         # Routing table: command string -> handler method
         self._handlers = {
@@ -37,13 +51,13 @@ class CommandDispatcher:
             "STAT": self._handle_stat,
             "HELP": self._handle_help,
             # Module B commands
-            "TYPE": self._not_implemented,
-            "MODE": self._not_implemented,
-            "PORT": self._not_implemented,
-            "PASV": self._not_implemented,
-            "RETR": self._not_implemented,
-            "STOR": self._not_implemented,
-            "ABOR": self._not_implemented,
+            "TYPE": self._handle_type,
+            "MODE": self._handle_mode,
+            "PORT": self._handle_port,
+            "PASV": self._handle_pasv,
+            "RETR": self._handle_retr,
+            "STOR": self._handle_stor,
+            "ABOR": self._handle_abor,
             # Module C commands
             "CWD": self._handle_cwd,
             "CDUP": self._handle_cdup,
@@ -94,7 +108,6 @@ class CommandDispatcher:
 
         return handler(raw_args)  # False = close session
 
-
     def _handle_user(self, arg: str) -> bool:
         keep_alive, reply = self._auth.handle_user(arg)
         self.session.send_reply(reply)
@@ -124,6 +137,37 @@ class CommandDispatcher:
         keep_alive, reply = self._auth.handle_help(arg)
         self.session.send_reply(reply)
         return keep_alive
+
+    # ------------------------------------------------------------------
+    # Module B Handlers (Data Connection & RDT Transfer)
+    # ------------------------------------------------------------------
+    def _handle_type(self, arg: str) -> bool:
+        self._data.handle_type(arg)
+        return True
+
+    def _handle_mode(self, arg: str) -> bool:
+        self._data.handle_mode(arg)
+        return True
+
+    def _handle_port(self, arg: str) -> bool:
+        self._data.handle_port(arg)
+        return True
+
+    def _handle_pasv(self, arg: str) -> bool:
+        self._data.handle_pasv(arg)
+        return True
+
+    def _handle_retr(self, arg: str) -> bool:
+        self._data.handle_retr(arg)
+        return True
+
+    def _handle_stor(self, arg: str) -> bool:
+        self._data.handle_stor(arg)
+        return True
+
+    def _handle_abor(self, arg: str) -> bool:
+        self._data.handle_abor(arg)
+        return True
 
     # ------------------------------------------------------------------
     # Module C Handlers (File System & Directory Management)
@@ -174,14 +218,11 @@ class CommandDispatcher:
         return True
 
     def _handle_stou(self, arg: str) -> bool:
-        ok, reply = self._fs.handle_stou(arg)
-        self.session.send_reply(reply)
+        self._data.handle_stou(arg)
         return True
 
     def _handle_appe(self, arg: str) -> bool:
-        res = self._fs.handle_appe(arg)
-        reply = res[1] if isinstance(res, tuple) and len(res) >= 2 else str(res)
-        self.session.send_reply(reply)
+        self._data.handle_appe(arg)
         return True
 
     def _handle_dele(self, arg: str) -> bool:
@@ -210,6 +251,5 @@ class CommandDispatcher:
         parts = arg.split(" ", 1)
         path = parts[0] if parts else ""
         algo = parts[1] if len(parts) > 1 else "sha256"
-        ok, reply = self._fs.handle_hash(path, algo)
-        self.session.send_reply(reply)
+        self._data.handle_hash(path, algo)
         return True

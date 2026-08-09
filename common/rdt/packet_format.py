@@ -80,12 +80,17 @@ class UdpPacket:
 
     @classmethod
     def unpack(cls, raw_data: bytes) -> "UdpPacket":
+        if len(raw_data) < HEADER_SIZE:
+            raise ValueError(
+                f"Gói tin quá ngắn ({len(raw_data)} bytes), kỳ vọng tối thiểu HEADER ({HEADER_SIZE} bytes)."
+            )
+
+        seq, ack, flags, checksum, payload_len = struct.unpack("!IIBIH", raw_data[:HEADER_SIZE])
+
         if len(raw_data) < HEADER_SIZE + payload_len:
             raise ValueError(
                 f"Gói tin bị cắt xén ({len(raw_data)} bytes), kỳ vọng tối thiểu ({HEADER_SIZE + payload_len} bytes)."
             )
-
-        seq, ack, flags, checksum, payload_len = struct.unpack("!IIBIH", raw_data[:HEADER_SIZE])
 
         payload = raw_data[HEADER_SIZE : HEADER_SIZE + payload_len]
         return cls(seq_num=seq, ack_num=ack, flags=flags, payload=payload, checksum=checksum)

@@ -9,9 +9,11 @@ if __package__ in {None, ""}:
 
 from client.tcp_control import TcpControlClient
 from client.fs_client import Display
+from client.data_client import DataChannelClient
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 21
+CLIENT_DATA_DIR = Path(__file__).resolve().parent / "client_data"
 
 CLI_BANNER = r"""
 ===================================================================
@@ -79,6 +81,7 @@ def main() -> None:
 
     print(f"[*] Đang kết nối tới FTP Server {host}:{port}...")
     client = TcpControlClient(host, port)
+    data_client = DataChannelClient()
 
     try:
         banner = client.connect()
@@ -91,6 +94,8 @@ def main() -> None:
         sys.exit(1)
 
     print("[i] Gõ 'HELP' để xem danh sách câu lệnh. Gõ 'QUIT' để thoát.\n")
+
+    CLIENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
         while True:
@@ -118,17 +123,66 @@ def main() -> None:
                 break
 
             try:
-                replies = client.send_command(raw_input_str)
                 parts = raw_input_str.split(" ", 1)
                 verb = parts[0].upper()
-                for reply in replies:
-                    Display.reply(verb, reply)
+                arg = parts[1].strip() if len(parts) > 1 else ""
+
+                if verb == "PASV":
+                    replies = client.send_command(raw_input_str)
+                    for reply in replies:
+                        Display.reply(verb, reply)
+                        if reply.startswith("227"):
+                            data_client.setup_from_pasv_reply(reply)
+                
+                elif verb in ("RETR", "STOR", "APPE", "STOU"):
+                    if verb in ("STOR", "APPE") and not arg:
+                        print("[X] LỖI: Cần chỉ định tên tệp.\n")
+                        continue
+                        
+                    local_data = None
+                    if verb in ("STOR", "APPE", "STOU"):
+                        local_file = arg if arg else input("Local file to upload: ").strip()
+                        if not local_file:
+                            continue
+                        file_path = CLIENT_DATA_DIR / local_file
+                        try:
+                            with open(file_path, "rb") as f:
+                                local_data = f.read()
+                        except OSError as e:
+                            print(f"[X] LỖI MỞ TỆP LOCAL: {e}\n")
+                            continue
+
+                    reply1 = client._send_command(raw_input_str)
+                    Display.reply(verb, reply1)
+                    
+                    if reply1.startswith("1"):
+                        if verb == "RETR":
+                            data = data_client.download()
+                            if data is not None:
+                                local_file = os.path.basename(arg) or "downloaded_file"
+                                file_path = CLIENT_DATA_DIR / local_file
+                                try:
+                                    with open(file_path, "wb") as f:
+                                        f.write(data)
+                                except OSError as e:
+                                    print(f"[X] LỖI LƯU TỆP: {e}\n")
+                        else:
+                            data_client.upload(local_data)
+                            
+                        reply2 = client.recv_reply()
+                        if reply2:
+                            Display.reply(verb, reply2)
+                else:
+                    replies = client.send_command(raw_input_str)
+                    for reply in replies:
+                        Display.reply(verb, reply)
 
             except Exception as err:
                 print(f"[X] LỖI TRUYỀN NHẬN: {err}\n")
                 break
 
     finally:
+        data_client.close()
         client.close()
 
 

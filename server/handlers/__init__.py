@@ -11,6 +11,8 @@ from server.handlers.fs_handler import (
     PermissionFSDeniedError,
     InvalidCommandSequenceError,
 )
+from server.handlers.auth_handler import AuthHandler
+from server.handlers.data_handler import DataHandler
 
 __all__ = [
     "FsHandler",
@@ -21,4 +23,6 @@ __all__ = [
     "FileAlreadyExistsError",
     "PermissionFSDeniedError",
     "InvalidCommandSequenceError",
+    "AuthHandler",
+    "DataHandler",
 ]

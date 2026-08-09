@@ -318,24 +318,24 @@ class FSManager:
         except Exception:
             return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-    def handle_hash(self, path: str = "", algo: str = "sha256"):
-        """Xử lý lệnh HASH: Tính mã băm SHA256 hoặc MD5 (dùng mã 213 FILE_STATUS)"""
-        is_safe, target_abs, _ = self._resolve_path(path)
-        if not is_safe or not os.path.isfile(target_abs):
-            return False, ReplyCode.FILE_UNAVAILABLE.format()
+    # def handle_hash(self, path: str = "", algo: str = "sha256"):
+    #     """Xử lý lệnh HASH: Tính mã băm SHA256 hoặc MD5 (dùng mã 213 FILE_STATUS)"""
+    #     is_safe, target_abs, _ = self._resolve_path(path)
+    #     if not is_safe or not os.path.isfile(target_abs):
+    #         return False, ReplyCode.FILE_UNAVAILABLE.format()
 
-        if algo.lower() == "md5":
-            hasher = hashlib.md5()
-        else:
-            hasher = hashlib.sha256()
+    #     if algo.lower() == "md5":
+    #         hasher = hashlib.md5()
+    #     else:
+    #         hasher = hashlib.sha256()
 
-        try:
-            with open(target_abs, "rb") as f:
-                while chunk := f.read(1024):
-                    hasher.update(chunk)
-            hash_hex = hasher.hexdigest()
-            return True, ReplyCode.FILE_STATUS.format(custom_msg=hash_hex)
-        except Exception:
-            return False, ReplyCode.FILE_UNAVAILABLE.format()
+    #     try:
+    #         with open(target_abs, "rb") as f:
+    #             while chunk := f.read(1024):
+    #                 hasher.update(chunk)
+    #         hash_hex = hasher.hexdigest()
+    #         return True, ReplyCode.FILE_STATUS.format(custom_msg=hash_hex)
+    #     except Exception:
+    #         return False, ReplyCode.FILE_UNAVAILABLE.format()
 
 

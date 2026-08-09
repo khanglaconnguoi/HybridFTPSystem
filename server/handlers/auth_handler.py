@@ -21,7 +21,16 @@ def _load_accounts() -> dict:
 
     with open(REGISTERED_USERS_FILE, "r", encoding="utf-8") as f:
         try:
-            return json.load(f)
+            data = json.load(f)
+            if isinstance(data, list):
+                return {
+                    item["username"]: item["password"]
+                    for item in data
+                    if isinstance(item, dict) and "username" in item and "password" in item
+                }
+            elif isinstance(data, dict):
+                return data
+            return {}
         except json.JSONDecodeError:
             return {}
 
@@ -35,7 +44,15 @@ class AuthHandler:
     def handle_user(self, username: str) -> tuple[bool, str]:
         if not username:
             return True, ReplyCode.SYNTAX_ERROR_PARAM.format("Username required.")
-        self.session.username = username.strip()
+
+        username = username.strip()
+        accounts = _load_accounts()
+        if username not in accounts:
+            self.session.auth_state = AuthState.ANONYMOUS
+            self.session.username = None
+            return True, ReplyCode.NOT_LOGGED_IN.format("Invalid username.")
+
+        self.session.username = username
         self.session.auth_state = AuthState.USER_OK
         return True, ReplyCode.NEED_PASSWORD.format()
 

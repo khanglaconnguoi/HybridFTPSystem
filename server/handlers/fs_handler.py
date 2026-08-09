@@ -90,12 +90,14 @@ class FSManager:
         """
         return self._guard.safe_join(self.current_rel_path, requested_path)
 
-    def resolve_path(self, requested: str) -> str | None:
+    def resolve_path(self, requested: str, filename: str | None = None) -> str | None:
         """
-        Interface công khai cho Module B (RdtEngine) gọi:
+        Interface công khai cho Module B (RdtEngine / DataHandler) gọi:
         Trả về đường dẫn tuyệt đối an toàn trên đĩa nếu nằm trong Sandbox, ngược lại trả về None.
+        Hỗ trợ cả 2 cách gọi: resolve_path(filename) và resolve_path(session, filename).
         """
-        is_safe, target_abs, _ = self._resolve_path(requested)
+        target = filename if filename is not None else requested
+        is_safe, target_abs, _ = self._resolve_path(target)
         return target_abs if is_safe else None
 
     def handle_pwd(self, arg: str = ""):

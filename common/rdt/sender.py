@@ -121,7 +121,7 @@ class RdtSender:
     def _on_ack(self) -> None:
         """Tăng cwnd: slow start hoặc congestion avoidance."""
         if self._cwnd < self._ssthresh:
-            self._cwnd = min(self._cwnd * 1, WINDOW_SIZE)   # Slow start
+            self._cwnd = min(self._cwnd * 2, WINDOW_SIZE)   # Slow start
         else:
             self._cwnd = min(self._cwnd + 1, WINDOW_SIZE)   # CA
 
