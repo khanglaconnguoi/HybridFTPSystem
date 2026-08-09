@@ -133,7 +133,29 @@ def main() -> None:
                         Display.reply(verb, reply)
                         if reply.startswith("227"):
                             data_client.setup_from_pasv_reply(reply)
-                
+
+                elif verb == "PORT":
+                    replies = client.send_command(raw_input_str)
+                    for reply in replies:
+                        Display.reply(verb, reply)
+                        if reply.startswith("200"):
+                            data_client.setup_from_port_arg(arg)
+
+
+                elif verb in ("LIST", "NLST"):
+                    reply1 = client._send_command(raw_input_str)
+                    Display.reply(verb, reply1)
+
+                    if reply1.startswith("1"):
+                        data = data_client.download()
+                        if data is not None:
+                            raw_text = data.decode("utf-8", errors="replace")
+                            Display.list_output(raw_text)
+
+                        reply2 = client.recv_reply()
+                        if reply2:
+                            Display.reply(verb, reply2)
+
                 elif verb in ("RETR", "STOR", "APPE", "STOU"):
                     if verb in ("STOR", "APPE") and not arg:
                         print("[X] LỖI: Cần chỉ định tên tệp.\n")

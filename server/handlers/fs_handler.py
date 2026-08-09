@@ -73,9 +73,11 @@ class FSManager:
 
     def __init__(self, session=None, root_dir: str = ROOT_DIR):
         self.session = session
+        if session and hasattr(session, "sandbox_root") and session.sandbox_root:
+            root_dir = session.sandbox_root
         self._guard = PathGuard(root_dir)
         self._walker = DirWalker()
-        self.current_rel_path = "/"
+        self.current_rel_path = session.cwd if (session and hasattr(session, "cwd")) else "/"
         self.rename_pending = None
 
     @property
@@ -116,6 +118,8 @@ class FSManager:
             return False, ReplyCode.FILE_UNAVAILABLE.format()
 
         self.current_rel_path = new_virtual_path
+        if self.session and hasattr(self.session, "cwd"):
+            self.session.cwd = new_virtual_path
         return True, ReplyCode.FILE_ACTION_OK.format()
 
     def handle_cdup(self, arg: str = ""):

@@ -32,12 +32,32 @@ class DataChannelClient:
         except (ValueError, IndexError):
             return False
 
+    def setup_from_port_arg(self, port_arg: str) -> bool:
+        """
+        Parse tham số PORT 'h1,h2,h3,h4,p1,p2'.
+        Tạo UDP socket và bind vào cổng active.
+        """
+        try:
+            parts = port_arg.strip().split(",")
+            ip   = ".".join(parts[:4])
+            port = (int(parts[4]) << 8) + int(parts[5])
+            if self._udp_sock:
+                self._udp_sock.close()
+            self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._udp_sock.bind((ip, port))
+            self._server_data_addr = None
+            return True
+        except (ValueError, IndexError, OSError):
+            return False
+
+
     def upload(self, data: bytes) -> bool:
         """Gửi data tới server qua RDT."""
-        if not self._udp_sock or not self._server_data_addr:
+        if not self._udp_sock:
             return False
         sender = RdtSender(self._udp_sock, self._server_data_addr)
         return sender.send_bytes(data)
+
 
     def download(self) -> bytes | None:
         """Nhận data từ server qua RDT."""

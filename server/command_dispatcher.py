@@ -198,13 +198,11 @@ class CommandDispatcher:
         return True
 
     def _handle_list(self, arg: str) -> bool:
-        ok, reply = self._fs.handle_list(arg)
-        self.session.send_reply(reply)
+        self._data.handle_list(arg)
         return True
 
     def _handle_nlst(self, arg: str) -> bool:
-        ok, reply = self._fs.handle_nlst(arg)
-        self.session.send_reply(reply)
+        self._data.handle_nlst(arg)
         return True
 
     def _handle_size(self, arg: str) -> bool:

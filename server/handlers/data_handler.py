@@ -5,7 +5,9 @@ import os
 from common.reply_codes import ReplyCode
 from common.rdt.sender   import RdtSender
 from common.rdt.receiver import RdtReceiver
+from common.rdt.packet_format import UdpPacket
 from common.constants import CHUNK_SIZE
+
 from server.session import ClientSession
 
 class DataHandler:
@@ -60,8 +62,10 @@ class DataHandler:
         self._data_sock = sock
         self._session.data_config.mode = "PASV"
         self._session.data_config.server_data_port = port
+        self._session.data_config.client_data_addr = None
 
         local_ip = self._session.conn.getsockname()[0].replace(".", ",")
+
         p1, p2 = port >> 8, port & 0xFF
         self._session.send_reply(
             f"227 Entering Passive Mode ({local_ip},{p1},{p2}).\r\n"
@@ -108,8 +112,9 @@ class DataHandler:
             with open(safe_path, "rb") as f:
                 data = f.read()
 
-            peer = self._session.data_config.client_data_addr
+            peer = self._session.data_config.client_data_addr if self._session.data_config.mode == "PORT" else None
             sender = RdtSender(sock, peer)
+
             ok = sender.send_bytes(data)
             if ok:
                 self._session.send_reply(ReplyCode.TRANSFER_COMPLETE.format())
@@ -137,8 +142,12 @@ class DataHandler:
             self._session.send_reply(ReplyCode.OPENING_DATA_CONN.format(
                 f"Ready to receive {filename}."
             ))
-            receiver = RdtReceiver(sock)
             peer = self._session.data_config.client_data_addr
+            if self._session.data_config.mode == "PORT" and peer:
+                syn = UdpPacket.syn_packet()
+                sock.sendto(syn.pack(), peer)
+
+            receiver = RdtReceiver(sock)
             data = receiver.receive_bytes(peer)
             if data is None:
                 self._session.send_reply(ReplyCode.TRANSFER_ABORTED.format())
@@ -182,15 +191,82 @@ class DataHandler:
             self._session.send_reply(ReplyCode.OPENING_DATA_CONN.format(
                 f"Appending to {filename}."
             ))
+            peer = self._session.data_config.client_data_addr
+            if self._session.data_config.mode == "PORT" and peer:
+                syn = UdpPacket.syn_packet()
+                sock.sendto(syn.pack(), peer)
+
             receiver = RdtReceiver(sock)
-            data = receiver.receive_bytes(self._session.data_config.client_data_addr)
+            data = receiver.receive_bytes(peer)
             if data is None:
                 self._session.send_reply(ReplyCode.TRANSFER_ABORTED.format())
                 return
             with open(safe_path, "ab") as f:
                 f.write(data)
             self._session.send_reply(ReplyCode.TRANSFER_COMPLETE.format())
+
         except OSError as e:
+            self._session.send_reply(ReplyCode.FILE_UNAVAILABLE.format(str(e)))
+        finally:
+            if self._session.data_config.mode == "PORT":
+                sock.close()
+
+    def handle_list(self, path: str = "") -> None:
+        """Gửi chi tiết danh sách thư mục về client qua RDT."""
+        from server.handlers.fs_handler import FsHandler
+        ok, result = FsHandler(self._session).handle_list(path)
+        if not ok:
+            self._session.send_reply(result)
+            return
+
+        sock = self._get_data_socket()
+        if not sock:
+            return
+
+        try:
+            self._session.send_reply(ReplyCode.OPENING_DATA_CONN.format(
+                "Opening data connection for directory listing."
+            ))
+            data = result.encode("utf-8")
+            peer = self._session.data_config.client_data_addr if self._session.data_config.mode == "PORT" else None
+            sender = RdtSender(sock, peer)
+            sent_ok = sender.send_bytes(data)
+            if sent_ok:
+                self._session.send_reply(ReplyCode.TRANSFER_COMPLETE.format())
+            else:
+                self._session.send_reply(ReplyCode.TRANSFER_ABORTED.format())
+        except Exception as e:
+            self._session.send_reply(ReplyCode.FILE_UNAVAILABLE.format(str(e)))
+        finally:
+            if self._session.data_config.mode == "PORT":
+                sock.close()
+
+    def handle_nlst(self, path: str = "") -> None:
+        """Gửi danh sách tên tệp về client qua RDT."""
+        from server.handlers.fs_handler import FsHandler
+        ok, result = FsHandler(self._session).handle_nlst(path)
+        if not ok:
+            self._session.send_reply(result)
+            return
+
+        sock = self._get_data_socket()
+        if not sock:
+            return
+
+        try:
+            self._session.send_reply(ReplyCode.OPENING_DATA_CONN.format(
+                "Opening data connection for directory listing."
+            ))
+            data = result.encode("utf-8")
+            peer = self._session.data_config.client_data_addr if self._session.data_config.mode == "PORT" else None
+            sender = RdtSender(sock, peer)
+
+            sent_ok = sender.send_bytes(data)
+            if sent_ok:
+                self._session.send_reply(ReplyCode.TRANSFER_COMPLETE.format())
+            else:
+                self._session.send_reply(ReplyCode.TRANSFER_ABORTED.format())
+        except Exception as e:
             self._session.send_reply(ReplyCode.FILE_UNAVAILABLE.format(str(e)))
         finally:
             if self._session.data_config.mode == "PORT":
