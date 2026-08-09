@@ -34,6 +34,7 @@ class ClientSession:
     data_channel_mode: str  # 'PORT' or 'PASV'
     data_port: Optional[int]
     data_addr: Optional[tuple[str, int]]
+    rdt_window: dict
 
     # Pending state (Module C)
     rename_pending: Optional[str]  # Stores the old name while waiting for RNTO
@@ -61,6 +62,7 @@ class ClientSession:
         self.data_channel_mode = "PASV"  # 'PORT' or 'PASV'
         self.data_port = None
         self.data_addr = None
+        self.rdt_window = {}
 
         # Pending state (Module C)
         self.rename_pending = None

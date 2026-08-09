@@ -1,7 +1,9 @@
 from common.reply_codes import ReplyCode
-from server.session import ClientSession
-from server.handlers.fs_handler import FsHandler
 from server.handlers.auth_handler import AuthHandler
+from server.handlers.fs_handler import FsHandler
+from server.session import ClientSession
+
+PUBLIC_COMMANDS = {"USER", "PASS", "QUIT", "HELP", "NOOP"}
 
 
 class CommandDispatcher:
@@ -84,6 +86,10 @@ class CommandDispatcher:
         handler = self._handlers.get(cmd)
         if handler is None:
             self.session.send_reply(ReplyCode.SYNTAX_ERROR.format())
+            return True
+
+        if cmd not in PUBLIC_COMMANDS and not self.session.is_logged_in():
+            self.session.send_reply(ReplyCode.NOT_LOGGED_IN.format())
             return True
 
         return handler(raw_args)  # False = close session
