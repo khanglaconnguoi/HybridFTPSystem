@@ -7,7 +7,6 @@ và bóc tách (unpack) dữ liệu RDT 3.0 over UDP.
 
 import struct
 import binascii
-from typing import Tuple
 
 
 FLAG_SYN  = 0b00000001   # Bắt đầu phiên

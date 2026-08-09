@@ -1,7 +1,8 @@
 import socket
+from common.constants import CHUNK_SIZE
 from common.rdt.packet_format import UdpPacket, HEADER_SIZE
 
-RECV_BUF = HEADER_SIZE + 1024 + 128  # header + max payload + buffer
+RECV_BUF = HEADER_SIZE + CHUNK_SIZE + 128  # header + max payload + buffer
 
 class RdtReceiver:
     """
