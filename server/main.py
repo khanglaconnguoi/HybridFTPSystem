@@ -11,7 +11,8 @@ from server.ftp_server import FtpServer
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 21
-DEFAULT_SANDBOX_ROOT = "./storage"
+DEFAULT_SANDBOX_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "server_data"))
+
 
 SERVER_BANNER = r"""
 ===================================================================
