@@ -9,6 +9,11 @@ from server.session import ClientSession
 SESSION_TIMEOUT_SECONDS = 300.0
 
 
+def log(msg: str) -> None:
+    thread_name = threading.current_thread().name
+    print(f"[{thread_name}] {msg}")
+
+
 class FtpServer:
     """
     Listens for new TCP connections and handles each client independently.
@@ -34,25 +39,25 @@ class FtpServer:
         """Start the accept loop; this blocks until KeyboardInterrupt is received."""
 
         self.listening_socket.listen(1)
-        print(f"[FTP Server listening on {self.host}:{self.port}]\n")
+        log(f"[FTP Server listening on {self.host}:{self.port}]")
 
         try:
             while True:
                 conn, addr = self.listening_socket.accept()
-                print(f"[Client connected: {addr[0]}:{addr[1]}]\n")
+                log(f"[Client connected: {addr[0]}:{addr[1]}]")
                 threading.Thread(
                     target=self._handle_client,
                     args=(conn, addr),
                     daemon=True,
-                    name=f"client-{addr[0]}:{addr[1]}"
+                    name=f"client-{addr[0]}:{addr[1]}",
                 ).start()
 
         except KeyboardInterrupt:
-            print("[Server shutting down...]\n")
+            log("[Server shutting down...]")
 
         finally:
             self.listening_socket.close()
-            print("[Server closed]\n")
+            log("[Server closed]")
 
     def _handle_client(self, conn: socket.socket, addr: tuple[str, int]) -> None:
         """
@@ -77,30 +82,36 @@ class FtpServer:
 
                 raw_line = deserialize_message(raw_bytes)
 
-                print(f"[Received from {addr[0]}:{addr[1]}]\n{raw_line.strip()}\n")
+                log(f"[Received from {addr[0]}:{addr[1]}] {raw_line.strip()}")
                 should_continue = dispatcher.dispatch(raw_line)
                 if not should_continue:
                     break
 
         except socket.timeout:
-            print(f"[Session timeout for client {addr[0]}:{addr[1]}]\n")
+            log(f"[Session timeout for client {addr[0]}:{addr[1]}]")
         except Exception as e:
-            print(f"[Error handling client {addr[0]}:{addr[1]}]\n{e}\n")
+            log(f"[Error handling client {addr[0]}:{addr[1]}] {e}")
 
         finally:
             with self._lock:
                 self.active_sessions.pop(addr, None)
             conn.close()
-            print(f"[Client disconnected: {addr[0]}:{addr[1]}]\n")
+            log(f"[Client disconnected: {addr[0]}:{addr[1]}]")
             self._log_sessions()
 
     def _log_sessions(self) -> None:
         """Print the active session table to the server console."""
         with self._lock:
             if not self.active_sessions:
-                print("[SESSIONS] No active sessions.\n")
+                log("[SESSIONS] No active sessions.")
                 return
-            print(f"[SESSIONS] Active ({len(self.active_sessions)}):")
+            log(f"[SESSIONS] Active ({len(self.active_sessions)}):")
+            log("{:<20} | {:<15} | {:<30}".format("Client", "Auth State", "CWD"))
+            log("-" * 71)
             for session_addr, sess in self.active_sessions.items():
-                print(f"  {session_addr[0]}:{session_addr[1]} | {sess.auth_state.name} | {sess.cwd}")
-            print()
+                addr_str = f"{session_addr[0]}:{session_addr[1]}"
+                log(
+                    "{:<20} | {:<15} | {:<30}".format(
+                        addr_str, sess.auth_state.name, sess.cwd
+                    )
+                )

@@ -1,7 +1,30 @@
+import json
+import os
+
 from common.reply_codes import ReplyCode
 from server.session import AuthState, ClientSession
 
-ACCOUNTS = {"admin": "1234", "student": "pass"}
+REGISTERED_USERS_FILE = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__), "..", "internal_data", "registered_users.json"
+    )
+)
+
+
+def _load_accounts() -> dict:
+    os.makedirs(os.path.dirname(REGISTERED_USERS_FILE), exist_ok=True)
+    if not os.path.exists(REGISTERED_USERS_FILE):
+        default_accounts = {"admin": "1234"}
+        with open(REGISTERED_USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(default_accounts, f, indent=4)
+        return default_accounts
+
+    with open(REGISTERED_USERS_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
 
 class AuthHandler:
     """Handles commands related to authentication and session management."""
@@ -20,7 +43,8 @@ class AuthHandler:
         if self.session.auth_state != AuthState.USER_OK:
             return True, ReplyCode.BAD_SEQUENCE.format("Send USER first.")
 
-        stored = ACCOUNTS.get(self.session.username)
+        accounts = _load_accounts()
+        stored = accounts.get(self.session.username)
         if stored and stored == password.strip():
             self.session.auth_state = AuthState.LOGGED_IN
             return True, ReplyCode.LOGIN_SUCCESS.format()
