@@ -1,6 +1,7 @@
 import socket
 
 from common.reply_codes import ReplyCode
+from common.tcp_message_format import deserialize_message
 from server.command_dispatcher import CommandDispatcher
 from server.session import ClientSession
 
@@ -55,9 +56,11 @@ class FtpServer:
 
         try:
             while True:
-                raw_line = conn.recv(1024).decode("utf-8")
-                if not raw_line:
+                raw_bytes = conn.recv(1024)
+                if not raw_bytes:
                     break  # client closed the connection
+
+                raw_line = deserialize_message(raw_bytes)
 
                 print(f"[Received from {addr[0]}:{addr[1]}]\n{raw_line.strip()}\n")
                 should_continue = dispatcher.dispatch(raw_line)

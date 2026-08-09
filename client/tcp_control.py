@@ -1,5 +1,7 @@
 import socket
 
+from common.tcp_message_format import serialize_message
+
 
 class TcpControlClient:
     """
@@ -30,7 +32,7 @@ class TcpControlClient:
         Returns the full reply string from the server.
         """
         if self.sock:
-            self.sock.sendall(f"{command}\r\n".encode("utf-8"))
+            self.sock.sendall(serialize_message(command))
         return self.recv_reply()
 
     def send_command(self, command: str) -> list[str]:

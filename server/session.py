@@ -2,6 +2,8 @@ import socket
 from enum import Enum, auto
 from typing import Optional
 
+from common.tcp_message_format import serialize_message
+
 
 class AuthState(Enum):
     ANONYMOUS = auto()  # USER has not been sent yet
@@ -65,9 +67,8 @@ class ClientSession:
 
     def send_reply(self, reply_line: str) -> None:
         """Send one FTP reply line back to the client over the TCP control socket."""
-        if not reply_line.endswith("\r\n"):
-            reply_line += "\r\n"
-        self.conn.sendall(reply_line.encode("utf-8"))
+        data = serialize_message(reply_line)
+        self.conn.sendall(data)
 
     def is_logged_in(self) -> bool:
         """Return True if the client has authenticated successfully."""
