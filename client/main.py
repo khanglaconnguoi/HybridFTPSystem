@@ -111,27 +111,18 @@ def main() -> None:
 
             if cmd_upper in ("QUIT", "EXIT"):
                 try:
-                    reply = client.send_command("QUIT")
-                    Display.reply("QUIT", reply)
+                    client.quit()
                 except Exception:
                     pass
                 print("[*] Đã ngắt kết nối an toàn. Cảm ơn bạn đã sử dụng Hybrid FTP CLI!")
                 break
 
             try:
-                reply = client.send_command(raw_input_str)
+                replies = client.send_command(raw_input_str)
                 parts = raw_input_str.split(" ", 1)
                 verb = parts[0].upper()
-                Display.reply(verb, reply)
-
-                # Nếu là phản hồi 1xx Preliminary Reply (chờ hoàn thành truyền dữ liệu)
-                if reply and reply.strip().startswith("1"):
-                    try:
-                        reply2 = client.recv_reply()
-                        if reply2:
-                            Display.reply(verb, reply2)
-                    except Exception:
-                        pass
+                for reply in replies:
+                    Display.reply(verb, reply)
 
             except Exception as err:
                 print(f"[X] LỖI TRUYỀN NHẬN: {err}\n")
