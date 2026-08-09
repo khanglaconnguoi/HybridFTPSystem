@@ -1,33 +1,41 @@
 """
-udp_rdt.py
-~~~~~~~~~~~~~~~
+common/udp_rdt.py
+~~~~~~~~~~~~~~~~~
 
-Mô tả: Module quản lý kết nối Socket UDP Data Transfer sử dụng cơ chế RDT 3.0.
-Tác giả: Hoang Quan
+Module quản lý kết nối Data Channel truyền dữ liệu tin cậy qua UDP (RDT 3.0).
+Bao gồm:
+  - RDTSender: Gửi file/bytes qua UDP với Sliding Window, Congestion Control & Fast Retransmit.
+  - RDTReceiver: Nhận file/bytes qua UDP, xử lý ACK và sắp xếp thứ tự gói tin (Selective ACK/Repeat).
+  - UDPRDTEngine: Class Facade cho Server Session xử lý các lệnh truyền dữ liệu (PASV, PORT, RETR, STOR, HASH, TYPE, MODE, ABOR).
 """
 
+import hashlib
+import io
 import logging
-#import os
+import os
 import socket
-#import struct
-import sys
-#import time
-from typing import Optional, Tuple
+import threading
+import time
+from typing import Optional, Tuple, BinaryIO
 
-# ----------------------------------------------------------------------
-# 1. CONSTANTS & CONFIGURATIONS (PEP 8: UPPER_CASE)
-# ----------------------------------------------------------------------
-DEFAULT_HOST: str = "127.0.0.1"
-DEFAULT_PORT: int = 8080
-BUFFER_SIZE: int = 2048
-DEFAULT_TIMEOUT: float = 1.0
-MAX_RETRIES: int = 5
-
-# Cấu hình Logging chuẩn nghiệp vụ
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+from common.packet_format import (
+    PacketFormat,
+    FLAG_FIN,
+    FLAG_ACK,
+    FLAG_SYN,
+    FLAG_RST,
+    FLAG_DATA,
 )
+from common.reply_codes import ReplyCode
+
+# ----------------------------------------------------------------------
+# 1. CONSTANTS & LOGGING
+# ----------------------------------------------------------------------
+CHUNK_SIZE: int = 1024
+DEFAULT_TIMEOUT: float = 0.5
+MAX_RETRIES: int = 5
+BUFFER_SIZE: int = 2048
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,418 +43,208 @@ logger = logging.getLogger(__name__)
 # 2. CUSTOM EXCEPTIONS
 # ----------------------------------------------------------------------
 class SocketTransferError(Exception):
-    """Ngoại lệ chung cho các lỗi xảy ra trong quá trình truyền dữ liệu."""
+    """Ngoại lệ chung cho lỗi truyền dữ liệu qua Socket."""
     pass
 
 
 class SocketTimeoutError(SocketTransferError):
-    """Xảy ra khi socket vượt quá thời gian chờ (Timeout)."""
+    """Lỗi quá thời gian chờ (Timeout) trên Socket."""
+    pass
+
+    
+class TransferAborted(SocketTransferError):
+    """Lỗi khi quá trình truyền bị hủy bởi lệnh ABOR từ client."""
     pass
 
 
-# ----------------------------------------------------------------------
-# 3. CORE BUSINESS LOGIC (CLASSES & FUNCTIONS)
-# ----------------------------------------------------------------------
-class UDPSocketEngine:
+
+class RDTSender:
     """
-    Lớp quản lý truyền/nhận dữ liệu qua UDP Socket chuẩn RDT.
+    Quản lý việc gửi dữ liệu tin cậy qua UDP RDT.
+    Tính năng:
+      - Sliding Window (Pipelining)
+      - Congestion Control (Slow Start & Congestion Avoidance)
+      - Fast Retransmit (3 Duplicate ACKs)
+      - Retransmission Timeout (RTO)
+    """
+
     
-    Attributes:
-        host (str): Địa chỉ IP của máy đích/máy chủ.
-        port (int): Cổng kết nối.
-        timeout (float): Thời gian chờ socket tính bằng giây.
+
+
+
+class RDTReceiver:
+    """
+    Quản lý việc nhận dữ liệu tin cậy qua UDP RDT.
+    Tính năng:
+      - Selective ACK / Out-of-order Buffer
+      - Loại bỏ gói trùng lặp (Duplicate Detection)
+      - Phản hồi ACK cứu Sender khi mất ACK FIN
     """
 
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = DEFAULT_TIMEOUT) -> None:
-        self.host = host
-        self.port = port
-        self.timeout = timeout
-        self._sock: socket.socket | None = None
+    
 
-    def _init_socket(self) -> socket.socket:
-        """Phương thức riêng tư (Private/Internal) để khởi tạo và cấu hình Socket."""
+
+
+class UDPRDTEngine:
+    """
+    Facade Class quản lý Data Channel và thực thi các lệnh FTP liên quan đến truyền dữ liệu.
+    Dùng chung cho cả Server và Client hoặc tích hợp vào CommandDispatcher.
+    """
+
+    def __init__(self, session = None) -> None:
+        self.session = session
+        self.transfer_type: str = 'I'
+        self.transfer_mode: str = 'S'
+        self.data_mode: str | None = None
+        self.data_sock: socket.socket | None = None
+        self.data_addr: Tuple[str, int] | None = None
+        self.abort_flag= threading.Event()
+
+    def _send_reply(self, reply_str: str) -> None:
+        """Phương thức phụ trợ gửi phản hồi về Session hoặc log nếu chạy riêng biệt."""
+        if self.session and hasattr(self.session, "send_reply"):
+            self.session.send_reply(reply_str)
+        else:
+            logger.info(f"[Control Reply] {reply_str.strip()}")
+
+    # HANDLERS
+    def handle_type(self, arg: str) -> None:
+        """
+        [Lệnh TYPE] Thiết lập kiểu truyền dữ liệu (I = Image/Binary, A = ASCII).
+        """
+        arg_upper = arg.strip().upper()
+        if arg_upper in ('I', 'A'):
+            self.transfer_type = arg_upper
+            logger.info(f"Đã chuyển kiểu truyền (TYPE) thành: {self.transfer_type}")
+            self._send_reply(ReplyCode.COMMAND_OK.format(f"Type set to {self.transfer_type}."))
+        else:
+            logger.warning(f"Lỗi lệnh TYPE: Tham số không hợp lệ '{arg}'")
+            self._send_reply(ReplyCode.PARAM_NOT_IMPLEMENTED.format())
+
+    def handle_mode(self, arg: str) -> None:
+        """
+        [Lệnh MODE] Thiết lập chế độ truyền dữ liệu (S = Stream).
+        """
+        arg_upper = arg.strip().upper()
+        if arg_upper == 'S':
+            self.transfer_mode = arg_upper
+            logger.info(f"Đã chuyển chế độ truyền (MODE) thành: {self.transfer_mode}")
+            self._send_reply(ReplyCode.COMMAND_OK.format(f"Mode set to {self.transfer_mode}."))
+        else:
+            logger.warning(f"Lỗi lệnh MODE: Tham số không hợp lệ '{arg}'")
+            self._send_reply(ReplyCode.PARAM_NOT_IMPLEMENTED.format())
+
+    def handle_pasv(self, _arg: str = "") -> None:
+        """
+        [Lệnh PASV] Mở UDP socket ngẫu nhiên trên Server và trả về địa chỉ cho Client.
+        """
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(self.timeout)
-            # Cấu hình cho phép tái sử dụng địa chỉ/cổng
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            return sock
-        except socket.error as err:
-            logger.error(f"Khởi tạo Socket thất bại: {err}")
-            raise SocketTransferError(f"Không thể tạo Socket: {err}") from err
+            self.data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.data_sock.bind(("", 0))
+            port = self.data_sock.getsockname()[1]
+            self.data_mode = 'PASV'
 
+            if self.session and hasattr(self.session, "conn"):
+                ip = self.session.conn.getsockname()[0]
+                if ip == "0.0.0.0" or ip == "::":
+                    ip = "127.0.0.1"
+            else:
+                ip = "127.0.0.1"
 
-    def _send_ack(self, dest_addr: Tuple[str, int], ack_num: int, flags: int = FLAG_ACK) -> None:
-            """Hàm phụ trợ đóng gói và gửi ACK."""
-            ack_packet = PacketFormat.pack(seq_num=0, ack_num=ack_num, flags=flags, payload=b"")
-            self._sock.sendto(ack_packet, dest_addr)
+            ip_parts = ip.split(".")
+            p1, p2 = port >> 8, port & 0xFF  # p1 = 8 bit đầu, p2 = 8 bit sau của port
+            logger.info(f"Mở PASV mode thành công: bind port {port}")
 
-    # # ===================
-    # # SENDER
-    # # ===================
+            self._send_reply(
+                ReplyCode.ENTERING_PASSIVE.format(
+                    h1=ip_parts[0],
+                    h2=ip_parts[1],
+                    h3=ip_parts[2],
+                    h4=ip_parts[3],
+                    p1=p1,
+                    p2=p2
+                )
+            )
 
-    # # Application Layer
-    # def send_file(self, file_path: str, dest_addr: Tuple[str, int], chunk_size: int = 1024) -> bool:
-    #     seq_num = 0
+        except Exception as err:
+            logger.error(f"Lỗi khi khởi tạo PASV mode: {err}")
+            self._send_reply(ReplyCode.CANT_OPEN_DATA_CONN.format("Cannot open passive data connection."))
+
+    def handle_port(self, arg: str = "") -> None:
+        """
+        [Lệnh PORT] Nhận địa chỉ IP và Port từ Client (Active mode).
+        Dạng tham số: h1,h2,h3,h4,p1,p2
+        """
+        try:
+            parts = [p.strip() for p in arg.split(",")]
+            if len(parts) != 6:
+                logger.warning(f"Lỗi cú pháp lệnh PORT: Tham số không đủ 6 phần ({arg})")
+                self._send_reply(ReplyCode.SYNTAX_ERROR_PARAM.format("Syntax error in PORT parameters."))
+                return
+
+            ip = '.'.join(parts[:4])
+            port = (int(parts[4]) << 8) + int(parts[5])
+
+            self.data_mode = 'PORT'
+            self.data_addr = (ip, port)
+            logger.info(f"Đã lưu cấu hình PORT active mode: {ip}:{port}")
+            self._send_reply(ReplyCode.COMMAND_OK.format("PORT command successful."))
+
+        except Exception as err:
+            logger.error(f"Lỗi khi xử lý lệnh PORT ({arg}): {err}")
+            self._send_reply(ReplyCode.SYNTAX_ERROR_PARAM.format("Invalid PORT parameters."))
+
+    # def handle_retr(self, filename: str) -> None:
+    #     """
+    #     [Lệnh RETR] Gửi file từ Server về Client qua UDP RDT.
+    #     """
+    
+    # def handle_stor(self, filename: str) -> None:
+    #     """
+    #     [Lệnh STOR] Nhận file từ Client về Server qua UDP RDT.
+    #     """
+
+    # def handle_hash(self, filename: str) -> None:
+    #     """
+    #     [Lệnh HASH] Tính toán mã SHA-256 của file trên Server để kiểm tra tính toàn vẹn.
+    #     """
+    #     target_path = self._resolve_file_path(filename)
+    #     if not target_path or not os.path.isfile(target_path):
+    #         #self._send_reply("550 File unavailable.\r\n")
+    #         return
+
     #     try:
-    #         with open(file_path, "rb") as f:
-    #             while True:
-    #                 chunk = f.read(chunk_size)
-    #                 if not chunk:
-    #                     logger.info("Đã đọc hết file. Kết thúc gửi file.")
-    #                     success = self.send_data(seq_num, b"", dest_addr)
-    #                     return success
+    #         sha256 = hashlib.sha256()
+    #         with open(target_path, "rb") as f:
+    #             while chunk := f.read(4096):
+    #                 sha256.update(chunk)
+    #         file_hash = sha256.hexdigest()
+    #         #self._send_reply(f"213 SHA-256 {file_hash}\r\n")
 
-    #                 if not self.send_data(seq_num, chunk, dest_addr):
-    #                     logger.error(f"Truyền dữ liệu thất bại tại seq={seq_num}")
-    #                     return False
-                    
-    #                 seq_num += 1
-
-    #         return True
     #     except Exception as err:
-    #         logger.error(f"Lỗi trong quá trình gửi file: {err}")
-    #         return False
-    
-    
-    # # Transport Layer
-    # def send_data(self, seq_num: int, payload: bytes, dest_addr: Tuple[str, int]) -> bool:
-    #     """
-    #     Gửi 1 chunk dữ liệu và chờ ACK tin cậy (RDT 3.0).
-    #     Tự động truyền lại (retransmit) nếu bị mất gói hoặc mất ACK.
+    #         logger.error(f"Lỗi khi tính HASH ({filename}): {err}")
+    #         #self._send_reply("550 Failed to compute hash.\r\n")
 
-    #     Args:
-    #         payload (bytes): Dữ liệu nhị phân cần gửi (rỗng b"" sẽ tự hiểu là cờ FIN).
-    #         dest_addr (Tuple[str, int]): IP và Port máy nhận.
-
-    #     Returns:
-    #         bool: True nếu bên nhận đã xác nhận ACK thành công, False nếu vượt quá số lần thử lại.
-    #     """
-    #     if not self._sock:
-    #         self._sock = self._init_socket()
-
-    #     flags = FLAG_FIN if not payload else 0
-        
-    #     packet = PacketFormat.pack(seq_num=seq_num, ack_num=0, flags=flags, payload=payload)
-
-    #     retries = 0
-        
-    #     while retries < MAX_RETRIES:
-    #         try:
-    #             self._sock.sendto(packet, dest_addr)
-    #             logger.debug(f"[Seq={seq_num}] Đã gửi {len(packet)} bytes tới {dest_addr} (Lần thử: {retries+1})")
-
-    #             ack_packet, _ = self._sock.recvfrom(BUFFER_SIZE)
-
-    #             if not PacketFormat.verify_checksum(ack_packet):
-    #                 logger.warning("Gói ACK nhận được bị lỗi Checksum -> Chờ timeout để gửi lại")
-    #                 continue
-
-    #             ack_header, _ = PacketFormat.unpack(ack_packet)
-
-    #             # Kiểm tra Sequence Number & Ghi file
-    #             if ack_header.seq_num == seq_num:
-    #                 return True
-    #             else:
-    #                 logger.warning(f"Nhận ACK sai thứ tự (Nhận: {ack_header.seq_num}, Kỳ vọng: {seq_num})")
-
-    #         except socket.timeout:
-    #             retries += 1
-    #             logger.warning(f"Timeout khi gửi dữ liệu tới {dest_addr}")
-            
-    #         except socket.error as err:
-    #             logger.error(f"Lỗi Socket khi nhận: {err}")
-    #             raise SocketTransferError(f"Lỗi nhận dữ liệu: {err}") from err 
-
-    #     logger.error(f"Gửi gói tin Seq={self.seq_num} thất bại sau {MAX_RETRIES} lần thử.")
-    #     return False
-
-
-    
-
-    # # ===================
-    # # RECEIVER
-    # # ===================
-
-    # # Application Layer
-    # def receive_file(self, save_path: str) -> bool:
-    #         """Hàm quản lý toàn bộ Workflow Nhận File RDT 3.0."""
-    #         expected_seq = 0
-            
-    #         try:
-    #             with open(save_path, "wb") as f:
-    #                 while True:
-    #                     try:
-    #                         payload = self.receive_data(expected_seq)
-    #                         if payload is None:
-    #                             logger.info("Đã nhận đủ file, kết thúc luồng ghi.")
-    #                             break
-    #                         f.write(payload)
-    #                         expected_seq += 1
-    #                     except SocketTimeoutError:
-    #                         # Đang chờ gói tin tiếp theo nhưng timeout, tiếp tục lắng nghe
-    #                         continue
-    
-    #             return True
-    #         except Exception as err:
-    #             logger.error(f"Lỗi trong quá trình nhận file: {err}")
-    #             return False
-
-    # # Transport Layer
-    # def receive_data(self, expected_seq: int) -> Tuple[bytes | None, Tuple[str, int]]:
+    def handle_abor(self, _arg: str = "") -> None:
         """
-        Lắng nghe và nhận dữ liệu từ Socket.
-
-        Returns:
-                Tuple[bytes, Tuple[str, int]]: Dữ liệu nhận được và địa chỉ người gửi.
+        [Lệnh ABOR] Hủy bỏ quá trình truyền file đang diễn ra.
         """
-    #     if not self._sock:
-    #         self._sock = self._init_socket()
+        self.abort_flag.set()
+        logger.info("Đã bật cờ hủy truyền dữ liệu (ABOR).")
 
-    #     try:
-    #         while True:
-    #             packet, sender_addr = self._sock.recvfrom(BUFFER_SIZE)
-    #             # Bỏ qua nếu gói tin bị hỏng Checksum
-    #             if not PacketFormat.verify_checksum(packet):
-    #                 logger.warning("Gói tin bị lỗi Checksum -> Drop packet")
-    #                 continue
-
-    #             # Bóc tách Header & Checksum (dùng packet_format)
-    #             header, payload = PacketFormat.unpack(packet)
-
-                
-    #             # Xử lý cờ FIN (Kết thúc truyền file)
-    #             if header.flags & FLAG_FIN:
-    #                 logger.info("Nhận cờ FIN. Kết thúc nhận file.")
-    #                 self._send_ack(sender_addr, header.seq_num) # Phản hồi ACK cho FIN
-
-    #                 self._wait_for_extra_fin(sender_addr, header.seq_num)
-    #                 return None, sender_addr
-
-    #             # Kiểm tra Sequence Number & Ghi file
-    #             if header.seq_num == expected_seq:
-    #                 self._send_ack(sender_addr, header.seq_num)
-    #                 return payload, sender_addr
-                
-    #             elif header.seq_num < expected_seq:
-    #                 logger.warning(f"Nhận gói lặp seq`={header.seq_num}. Gửi lại ACK.")
-    #                 self._send_ack(sender_addr, header.seq_num)
-    #                 continue
-
-    #             else:
-    #                 logger.warning(f"Nhận gói thiếu seq`={expected_seq}. Gửi lại ACK.")
-    #                 continue
-
-                
-        
-    #     except socket.timeout:
-    #         logger.warning("Hết thời gian chờ nhận dữ liệu.")
-    #         raise SocketTimeoutError("Socket timeout khi nhận dữ liệu.")
-        
-    #     except socket.error as err:
-    #         logger.error(f"Lỗi Socket khi nhận: {err}")
-    #         raise SocketTransferError(f"Lỗi nhận dữ liệu: {err}") from err
-        
-    # def _wait_for_extra_fin(self, sender_addr: Tuple[str, int], fin_seq: int, timeout: float = 0.5):
-    #     """
-    #     [TẦNG TRANSPORT] Lắng nghe thêm 0.5s phòng trường hợp ACK-FIN bị mất.
-    #     """
-    #     old_timeout = self._sock.gettimeout()
-    #     self._sock.settimeout(timeout)
-    #     try:
-    #         while True:
-    #             raw_data, _ = self._sock.recvfrom(BUFFER_SIZE)
-    #             if PacketFormat.verify_checksum(raw_data):
-    #                 header, _ = PacketFormat.unpack(raw_data)
-    #                 if header.flags & FLAG_FIN:
-    #                     logger.warning("ACK của FIN bị mất -> Đã nhận lại FIN -> Phát lại ACK cứu Sender!")
-    #                     self._send_ack(sender_addr, fin_seq)
-    #     except Exception:
-    #         pass
-    #     finally:
-    #         self._sock.settimeout(old_timeout)
-    
-
-    # @staticmethod
-    # def setup_passive_mode(session: ClientSession, server_ip: str) -> str:
-    #     """
-    #     [Lệnh PASV] Mở 1 UDP socket bind ngẫu nhiên (port=0), lưu vào session,
-    #     trả về chuỗi định dạng 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2).
-    #     """
-    #     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #     udp_sock.bind((server_ip, 0))  # OS chọn port trống
-    #     assigned_port = udp_sock.getsockname()[1]
-        
-    #     session.data_sock = udp_sock
-    #     session.data_mode = 'PASV'
-        
-    #     ip_parts = server_ip.split('.')
-    #     p1, p2 = assigned_port // 256, assigned_port % 256
-    #     addr_str = ",".join(ip_parts + [str(p1), str(p2)])
-    #     return f"227 Entering Passive Mode ({addr_str})"
-    
-    # @staticmethod
-    # def setup_active_mode(session: ClientSession, client_ip: str, client_port: int) -> str:
-    #     """
-    #     [Lệnh PORT] Lưu địa chỉ client gửi lên vào session.
-    #     """
-    #     session.data_addr = (client_ip, client_port)
-    #     session.data_mode = 'PORT'
-    #     session.data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #     return "200 PORT command successful"
-    
-    @staticmethod
-    def send_file_rdt(
-        file_obj: BinaryIO, 
-        sock: socket.socket, 
-        remote_addr: Tuple[str, int], 
-        abort_flag: threading.Event,
-        chunk_size: int = 1024,
-        rto: float = 0.5
-    ) -> None:
-        """
-        Gửi file qua UDP với RDT EXCELLENT Tier:
-        - Sliding Window (Pipelining)
-        - Congestion Control (Slow Start & Congestion Avoidance)
-        - Fast Retransmit (3 Duplicate ACKs)
-        """
-        base = 0
-        next_seq = 0
-        cwnd = 1.0
-        ssthresh = 16
-        dup_ack_count = 0
-        last_ack_num = -1
-        
-        sent_buffer = {}      # {seq_num: packet_bytes}
-        eof_reached = False
-        while True:
-            # 0. Kiểm tra cờ Hủy (ABOR)
-            if abort_flag.is_set():
-                raise TransferAborted("Truyền file bị hủy bởi lệnh ABOR.")
-            # 1. GỬI DỮ LIỆU TRONG CỬA SỔ TRƯỢT (cwnd)
-            while next_seq < base + int(cwnd) and not eof_reached:
-                chunk = file_obj.read(chunk_size)
-                if not chunk:
-                    # Đã đọc hết file -> Gửi gói FIN
-                    eof_reached = True
-                    fin_pkt = PacketFormat.pack(seq_num=next_seq, ack_num=0, flags=FLAG_FIN, payload=b"")
-                    sock.sendto(fin_pkt, remote_addr)
-                    sent_buffer[next_seq] = fin_pkt
-                    break
-                # Đóng gói dữ liệu thường
-                pkt = PacketFormat.pack(seq_num=next_seq, ack_num=0, flags=0, payload=chunk)
-                sock.sendto(pkt, remote_addr)
-                sent_buffer[next_seq] = pkt
-                next_seq += 1
-            # Kiểm tra xem đã gửi xong toàn bộ và nhận đủ ACK chưa
-            if eof_reached and base == next_seq:
-                logger.info("Đã truyền xong toàn bộ file và nhận đầy đủ ACK.")
-                break
-            # 2. CHỜ NHẬN ACK
-            sock.settimeout(rto)
+        if self.data_sock and self.data_addr:
             try:
-                raw_ack, _ = sock.recvfrom(2048)
-                
-                if not PacketFormat.verify_checksum(raw_ack):
-                    continue  # Bỏ qua gói ACK lỗi Checksum
-                ack_header, _ = PacketFormat.unpack(raw_ack)
-                if not (ack_header.flags & FLAG_ACK):
-                    continue
-                rec_ack = ack_header.ack_num
-                # 3. XỬ LÝ ACK MỚI (New ACK)
-                if rec_ack >= base:
-                    # Trượt base đến gói tiếp theo chưa ACK
-                    for s in list(sent_buffer.keys()):
-                        if s <= rec_ack:
-                            del sent_buffer[s]
-                    
-                    base = rec_ack + 1
-                    last_ack_num = rec_ack
-                    dup_ack_count = 0
-                    # Điều chỉnh Congestion Window
-                    if cwnd < ssthresh:
-                        cwnd += 1.0          # Slow Start (gấp đôi mỗi RTT)
-                    else:
-                        cwnd += 1.0 / cwnd   # Congestion Avoidance (tăng tuyến tính)
-                # 4. XỬ LÝ DUP ACK -> FAST RETRANSMIT
-                elif rec_ack == last_ack_num:
-                    dup_ack_count += 1
-                    if dup_ack_count == 3:
-                        # 3 Dup ACK -> Phát lại gói base ngay lập tức
-                        if base in sent_buffer:
-                            sock.sendto(sent_buffer[base], remote_addr)
-                        
-                        ssthresh = max(int(cwnd) // 2, 2)
-                        cwnd = float(ssthresh)
-                        dup_ack_count = 0
-            # 5. XỬ LÝ TIMEOUT -> SLOW START LẠI
-            except socket.timeout:
-                # Phát lại tất cả các gói trong sent_buffer
-                for seq in sorted(sent_buffer.keys()):
-                    sock.sendto(sent_buffer[seq], remote_addr)
-                ssthresh = max(int(cwnd) // 2, 2)
-                cwnd = 1.0   # Quay lại Slow Start
-                dup_ack_count = 0
-    
-    
-    
-    @staticmethod
-    def receive_file_rdt(
-        file_obj: BinaryIO, 
-        sock: socket.socket, 
-        abort_flag: threading.Event
-    ) -> int:
-        """
-        [Lệnh STOR] Nhận file qua UDP với RDT (Selective Repeat), ghi vào file_obj.
-        Trả về số bytes đã nhận thành công.
-        """
-        # Logic nhận RDT tại đây...
-        return total_bytes
-    
-    
-    
+                rst_packet = PacketFormat.make_rst()
+                self.data_sock.sendto(rst_packet, self.data_addr)
+                logger.info(f"Đã gửi gói RST đến {self.data_addr} để ngắt truyền dữ liệu.")
+            except Exception as e:
+                logger.error(f"Lỗi khi gửi gói RST cho lệnh ABOR: {e}")
+
+        self._send_reply(ReplyCode.TRANSFER_COMPLETE.format("ABOR command successful."))
+
+
+
+
     
 
-
-    def close(self) -> None:
-        """Giải phóng tài nguyên Socket an toàn."""
-        if self._sock:
-            try:
-                self._sock.close()
-                logger.info("Đã đóng Socket thành công.")
-            except socket.error as err:
-                logger.error(f"Lỗi khi đóng Socket: {err}")
-            finally:
-                self._sock = None
-
-    def __enter__(self) -> "UDPSocketEngine":
-        """Hỗ trợ Context Manager (cú pháp `with`)."""
-        self._sock = self._init_socket()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Tự động đóng Socket khi thoát khỏi khối `with`."""
-        self.close()
-
-
-# ----------------------------------------------------------------------
-# 4. MAIN ENTRY POINT (EXECUTION & TESTING)
-# ----------------------------------------------------------------------
-def main() -> None:
-    """Hàm thực thi chính khi file được gọi trực tiếp."""
-    logger.info("Bắt đầu khởi chạy chương trình Socket...")
-
-    # Sử dụng context manager (with) để tự động quản lý tài nguyên
-    try:
-        with UDPSocketEngine(port=9000) as engine:
-            logger.info("Socket Engine đã sẵn sàng hoạt động.")
-            # Thực thi các tác vụ tại đây...
-    except KeyboardInterrupt:
-        logger.info("Người dùng chủ động dừng chương trình (Ctrl+C).")
-    except Exception as err:
-        logger.critical(f"Lỗi hệ thống không xác định: {err}", exc_info=True)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+    
