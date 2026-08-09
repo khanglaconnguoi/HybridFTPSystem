@@ -74,6 +74,7 @@ class RdtSender:
                         window.pop(s, None)
                     base = ack_num
                     self._on_ack()
+                    self._dup_ack = {k: v for k, v in self._dup_ack.items() if k >= base}
 
                 # Fast retransmit
                 self._dup_ack[ack_num] = self._dup_ack.get(ack_num, 0) + 1
@@ -85,18 +86,34 @@ class RdtSender:
 
             except socket.timeout:
                 # Timeout — retransmit tất cả gói trong window chưa ACK
-                now = time.monotonic()
-                for seq, (packet, t, retry) in list(window.items()):
-                    if now - t > TIMEOUT:
-                        if retry >= MAX_RETRY:
-                            return False  # Từ bỏ sau MAX_RETRY lần
-                        self._sock.sendto(packet.pack(), self._peer)
-                        window[seq] = (packet, now, retry + 1)
-                self._on_loss()
+                if base in window:
+                    packet, t, retry = window[base]
+                    if retry >= MAX_RETRY:
+                        return False 
+                    self._sock.sendto(packet.pack(), self._peer)
+                    window[base] = (packet, time.monotonic(), retry + 1)
+                    self._on_loss()
+                # now = time.monotonic()
+                # for seq, (packet, t, retry) in list(window.items()):
+                #     if now - t > TIMEOUT:
+                #         if retry >= MAX_RETRY:
+                #             return False  # Từ bỏ sau MAX_RETRY lần
+                #         self._sock.sendto(packet.pack(), self._peer)
+                #         window[seq] = (packet, now, retry + 1)
+                # self._on_loss()
 
         # Gửi FIN để báo kết thúc
-        fin = UdpPacket.fin_packet()
-        self._sock.sendto(fin.pack(), self._peer)
+        fin_packet = UdpPacket.fin_packet()
+        for _ in range(MAX_RETRY):
+            self._sock.sendto(fin_packet.pack(), self._peer)
+            try:
+                self._sock.settimeout(TIMEOUT)
+                raw, _ = self._sock.recvfrom(HEADER_SIZE + 4)
+                ack_pkt = UdpPacket.unpack(raw)
+                if ack_pkt.is_ack and ack_pkt.is_valid():
+                    break  # Receiver đã xác nhận FIN
+            except socket.timeout:
+                continue
         return True
 
     # ── Congestion control ─────────────────────────────────────
@@ -104,7 +121,7 @@ class RdtSender:
     def _on_ack(self) -> None:
         """Tăng cwnd: slow start hoặc congestion avoidance."""
         if self._cwnd < self._ssthresh:
-            self._cwnd = min(self._cwnd * 2, WINDOW_SIZE)   # Slow start
+            self._cwnd = min(self._cwnd * 1, WINDOW_SIZE)   # Slow start
         else:
             self._cwnd = min(self._cwnd + 1, WINDOW_SIZE)   # CA
 

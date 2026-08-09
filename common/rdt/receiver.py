@@ -40,7 +40,9 @@ class RdtReceiver:
 
                 # Kiểm tra FIN
                 if packet.is_fin:
-                    # Đã nhận FIN — ghép dữ liệu theo thứ tự
+                    fin_ack = UdpPacket.ack_packet(expected_seq)
+                    self._sock.sendto(fin_ack.pack(), addr)
+                    
                     result = b""
                     for seq in sorted(buffer.keys()):
                         result += buffer[seq]
