@@ -58,7 +58,7 @@ class RdtReceiver:
                     result = b""
                     for seq in sorted(buffer.keys()):
                         result += buffer[seq]
-                    if on_progress and expected_total is not None:
+                    if on_progress and expected_total is not None and received_bytes < expected_total:
                         on_progress(len(result), expected_total)
                     return result
 

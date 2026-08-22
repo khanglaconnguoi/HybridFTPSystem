@@ -123,8 +123,6 @@ class RdtSender:
             except socket.timeout:
                 continue
 
-        if on_progress:
-            on_progress(total_bytes, total_bytes)
         return True
 
     # ── Congestion control ─────────────────────────────────────
