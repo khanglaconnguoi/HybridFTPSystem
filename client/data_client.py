@@ -1,4 +1,5 @@
 import socket
+from typing import Callable
 from common.rdt.sender   import RdtSender
 from common.rdt.receiver import RdtReceiver
 from common.rdt.packet_format import UdpPacket
@@ -51,15 +52,19 @@ class DataChannelClient:
             return False
 
 
-    def upload(self, data: bytes) -> bool:
+    def upload(self, data: bytes, on_progress: Callable[[int, int], None] | None = None) -> bool:
         """Gửi data tới server qua RDT."""
         if not self._udp_sock:
             return False
         sender = RdtSender(self._udp_sock, self._server_data_addr)
-        return sender.send_bytes(data)
+        return sender.send_bytes(data, on_progress=on_progress)
 
 
-    def download(self) -> bytes | None:
+    def download(
+        self,
+        expected_total: int | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes | None:
         """Nhận data từ server qua RDT."""
         if not self._udp_sock:
             return None
@@ -71,7 +76,11 @@ class DataChannelClient:
         receiver = RdtReceiver(self._udp_sock)
         # peer_ip  = self._server_data_addr[0] if self._server_data_addr else None
         # peer     = (peer_ip, None) if peer_ip else None
-        return receiver.receive_bytes(self._server_data_addr)
+        return receiver.receive_bytes(
+            peer_addr=self._server_data_addr,
+            expected_total=expected_total,
+            on_progress=on_progress,
+        )
 
     def close(self) -> None:
         if self._udp_sock:

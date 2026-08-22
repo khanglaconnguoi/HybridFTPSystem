@@ -11,7 +11,7 @@ from client.tcp_control import TcpControlClient
 from client.fs_client import Display
 from client.data_client import DataChannelClient
 
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "10.63.164.191"
 DEFAULT_PORT = 21
 CLIENT_DATA_DIR = Path(__file__).resolve().parent / "client_data"
 
@@ -174,12 +174,24 @@ def main() -> None:
                             print(f"[X] LỖI MỞ TỆP LOCAL: {e}\n")
                             continue
 
+                    expected_size = None
+                    if verb == "RETR" and arg:
+                        size_reply = client._send_command(f"SIZE {arg}")
+                        if size_reply and size_reply.startswith("213"):
+                            try:
+                                expected_size = int(size_reply.split()[-1])
+                            except (ValueError, IndexError):
+                                expected_size = None
+
                     reply1 = client._send_command(raw_input_str)
                     Display.reply(verb, reply1)
                     
                     if reply1.startswith("1"):
                         if verb == "RETR":
-                            data = data_client.download()
+                            data = data_client.download(
+                                expected_total=expected_size,
+                                on_progress=Display.progress if expected_size is not None else None,
+                            )
                             if data is not None:
                                 local_file = os.path.basename(arg) or "downloaded_file"
                                 file_path = CLIENT_DATA_DIR / local_file
@@ -189,7 +201,7 @@ def main() -> None:
                                 except OSError as e:
                                     print(f"[X] LỖI LƯU TỆP: {e}\n")
                         else:
-                            data_client.upload(local_data)
+                            data_client.upload(local_data, on_progress=Display.progress)
                             
                         reply2 = client.recv_reply()
                         if reply2:

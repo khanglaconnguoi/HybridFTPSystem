@@ -91,7 +91,7 @@ class Display:
     @staticmethod
     def progress(transferred: int, total: int, width: int = 40) -> None:
         """Hiển thị thanh tiến trình truyền tải (Progress Bar) theo thời gian thực."""
-        ratio = transferred / total if total > 0 else 1.0
+        ratio = min(1.0, max(0.0, transferred / total)) if total > 0 else 1.0
         filled = int(width * ratio)
         bar = "=" * filled + "-" * (width - filled)
         pct = ratio * 100

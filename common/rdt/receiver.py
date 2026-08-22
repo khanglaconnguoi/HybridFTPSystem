@@ -1,4 +1,5 @@
 import socket
+from typing import Callable
 from common.constants import CHUNK_SIZE
 from common.rdt.packet_format import UdpPacket, HEADER_SIZE
 
@@ -16,15 +17,26 @@ class RdtReceiver:
     def __init__(self, sock: socket.socket):
         self._sock = sock
 
-    def receive_bytes(self, peer_addr: tuple | None = None) -> bytes | None:
+    def receive_bytes(
+        self,
+        peer_addr: tuple | None = None,
+        expected_total: int | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bytes | None:
         """
         Nhận toàn bộ dữ liệu cho đến khi gặp FIN.
         peer_addr: nếu set, chỉ nhận từ địa chỉ đó (PASV mode).
+        expected_total: tổng số bytes dự kiến (để hiển thị progress bar).
+        on_progress: hàm callback (transferred, total) -> None.
         Trả bytes nếu thành công, None nếu lỗi.
         """
         buffer:  dict[int, bytes] = {}   # seq → payload
         received_seq: set[int]        = set()
+        received_bytes = 0
         expected_seq = 0  # seq số tiếp theo cần đề ghép vào stream
+
+        if on_progress and expected_total is not None:
+            on_progress(0, expected_total)
 
         self._sock.settimeout(10.0)  # Timeout toàn phiên nhận
 
@@ -46,6 +58,8 @@ class RdtReceiver:
                     result = b""
                     for seq in sorted(buffer.keys()):
                         result += buffer[seq]
+                    if on_progress and expected_total is not None:
+                        on_progress(len(result), expected_total)
                     return result
 
                 # Bỏ qua gói không phải DATA
@@ -62,6 +76,9 @@ class RdtReceiver:
                 if seq not in received_seq:
                     buffer[seq]   = packet.payload
                     received_seq.add(seq)
+                    received_bytes += len(packet.payload)
+                    if on_progress and expected_total is not None:
+                        on_progress(min(received_bytes, expected_total), expected_total)
 
                 # Tính cumulative ACK = seq liên tục lớn nhất + 1
                 cum_ack = expected_seq

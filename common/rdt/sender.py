@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+from typing import Callable
 from common.constants import CHUNK_SIZE, WINDOW_SIZE, TIMEOUT, MAX_RETRY
 from common.rdt.packet_format import UdpPacket, HEADER_SIZE
 
@@ -25,7 +26,7 @@ class RdtSender:
 
     # ── Public API ─────────────────────────────────────────────
 
-    def send_bytes(self, data: bytes) -> bool:
+    def send_bytes(self, data: bytes, on_progress: Callable[[int, int], None] | None = None) -> bool:
         """
         Gửi toàn bộ data. Trả True nếu thành công, False nếu thất bại.
         Đây là method duy nhất bên ngoài cần gọi.
@@ -44,11 +45,15 @@ class RdtSender:
             except Exception:
                 return False
 
+        total_bytes = len(data)
         chunks = [data[i : i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
         total  = len(chunks)
         window = {}   # seq → (packet, send_time, retry_count)
         base   = 0    # seq nhỏ nhất chưa được ACK
         next_s = 0    # seq tiếp theo cần gửi
+
+        if on_progress:
+            on_progress(0, total_bytes)
 
         while base < total:
             # Gửi các gói trong cửa sổ
@@ -75,6 +80,9 @@ class RdtSender:
                     base = ack_num
                     self._on_ack()
                     self._dup_ack = {k: v for k, v in self._dup_ack.items() if k >= base}
+                    if on_progress:
+                        transferred = min(base * CHUNK_SIZE, total_bytes)
+                        on_progress(transferred, total_bytes)
 
                 # Fast retransmit
                 self._dup_ack[ack_num] = self._dup_ack.get(ack_num, 0) + 1
@@ -86,21 +94,21 @@ class RdtSender:
 
             except socket.timeout:
                 # Timeout — retransmit tất cả gói trong window chưa ACK
-                if base in window:
-                    packet, t, retry = window[base]
-                    if retry >= MAX_RETRY:
-                        return False 
-                    self._sock.sendto(packet.pack(), self._peer)
-                    window[base] = (packet, time.monotonic(), retry + 1)
-                    self._on_loss()
-                # now = time.monotonic()
-                # for seq, (packet, t, retry) in list(window.items()):
-                #     if now - t > TIMEOUT:
-                #         if retry >= MAX_RETRY:
-                #             return False  # Từ bỏ sau MAX_RETRY lần
-                #         self._sock.sendto(packet.pack(), self._peer)
-                #         window[seq] = (packet, now, retry + 1)
-                # self._on_loss()
+                # if base in window:
+                #     packet, t, retry = window[base]
+                #     if retry >= MAX_RETRY:
+                #         return False 
+                #     self._sock.sendto(packet.pack(), self._peer)
+                #     window[base] = (packet, time.monotonic(), retry + 1)
+                #     self._on_loss()
+                now = time.monotonic()
+                for seq, (packet, t, retry) in list(window.items()):
+                    if now - t > TIMEOUT:
+                        if retry >= MAX_RETRY:
+                            return False  # Từ bỏ sau MAX_RETRY lần
+                        self._sock.sendto(packet.pack(), self._peer)
+                        window[seq] = (packet, now, retry + 1)
+                self._on_loss()
 
         # Gửi FIN để báo kết thúc
         fin_packet = UdpPacket.fin_packet()
@@ -114,6 +122,9 @@ class RdtSender:
                     break  # Receiver đã xác nhận FIN
             except socket.timeout:
                 continue
+
+        if on_progress:
+            on_progress(total_bytes, total_bytes)
         return True
 
     # ── Congestion control ─────────────────────────────────────

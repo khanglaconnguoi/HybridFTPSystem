@@ -1,4 +1,5 @@
 import os
+import stat
 import time
 
 
@@ -18,10 +19,11 @@ class DirWalker:
         try:
             for entry in sorted(os.scandir(directory), key=lambda e: e.name):
                 st = entry.stat(follow_symlinks=False)
-                kind = "d" if entry.is_dir(follow_symlinks=False) else "-"
+                perm_str = stat.filemode(st.st_mode)
+                nlink = getattr(st, "st_nlink", 1)
                 size = st.st_size
                 mtime = time.strftime("%b %d %H:%M", time.localtime(st.st_mtime))
-                lines.append(f"{kind}rwxr-xr-x  1 ftp ftp {size:>12} {mtime} {entry.name}")
+                lines.append(f"{perm_str} {nlink:>2} ftp ftp {size:>12} {mtime} {entry.name}")
         except PermissionError:
             pass
         return "\r\n".join(lines)
